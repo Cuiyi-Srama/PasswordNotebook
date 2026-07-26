@@ -53,11 +53,11 @@
 - 常见 `! @ # $ % ^ & * - _ = + .` → 默认开启，所有网站都兼容
 - 扩展 `< > [ ] { } ( ) / \` → 按需开启，适配老旧系统
 
-### 矩阵代码雨 · 赛博朋克 UI
+### 纯代码 UI · 暗色主题
 
-- 全屏动态代码雨背景，片假名 + 字母 + 数字混合
-- 800~1600 px/s 高速下落，头部亮绿、尾部渐变淡出
-- 暗色主题，玻璃风卡片，全部 UI 纯代码绘制
+- 全部 UI 纯 Java 代码绘制，零 XML 布局依赖
+- 暗色主题，玻璃风卡片，简洁直观
+- 只申请零个权限，轻量干净
 
 ---
 
@@ -108,7 +108,7 @@ APK 输出：`app/build/outputs/apk/debug/app-debug.apk`
 ```
 PasswordNotebook/
 └── app/src/main/java/com/cuiyi/passwordnotebook/
-    ├── MainActivity.java       # UI 全部代码 + 矩阵雨背景绘制
+    ├── MainActivity.java       # UI 全部代码 + 动态背景绘制
     ├── PasswordGenerator.java  # 三种密码生成模式
     └── CryptoHelper.java       # AES-256-GCM 加密与解密
 ```
@@ -121,4 +121,4 @@ PasswordNotebook/
 
 ---
 
-*PasswordNotebook — 装进口袋的赛博朋克密码守护者* 🗝️
+*PasswordNotebook — 装进口袋的密码守护者* 🗝️
