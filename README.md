@@ -1,8 +1,7 @@
 # PasswordNotebook
 
-> 🗝️ **Android 密码备忘录** — AES-256-GCM 加密 · 零权限 · 纯本地  
-> 下载 APK 装到手机上，当你的加密密码小本  
-> **→ [📥 下载最新 APK](https://github.com/Cuiyi-Srama/PasswordNotebook/releases/latest)**
+> 🗝️ 风格酷炫的安全密码本 — AES-256-GCM 加密 · 零权限 · 纯本地  
+> **→ [📥 下载 APK](https://github.com/Cuiyi-Srama/PasswordNotebook/releases/latest)**
 
 [![GitHub release](https://img.shields.io/github/v/release/Cuiyi-Srama/PasswordNotebook)](https://github.com/Cuiyi-Srama/PasswordNotebook/releases)
 [![License](https://img.shields.io/github/license/Cuiyi-Srama/PasswordNotebook)](LICENSE)
