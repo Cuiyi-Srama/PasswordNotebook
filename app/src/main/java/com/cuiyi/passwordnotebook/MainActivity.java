@@ -9,12 +9,14 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.View;
 import android.view.ViewGroup;
@@ -260,6 +262,38 @@ public class MainActivity extends Activity {
 
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
+
+        // Push the interface clear of the status bar and the gesture nav bar.
+        // Drawing edge to edge left the tab row under the clock and the
+        // notification icons, which made the tabs hard to hit and hid them
+        // behind anything the system drew on top. Uses the platform API only:
+        // the project deliberately has no AndroidX dependency, so it cannot
+        // call ViewCompat / WindowInsetsCompat here.
+        final LinearLayout insetColumn = column;
+        root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                int top = 0;
+                int bottom = 0;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.graphics.Insets bars = insets.getInsets(
+                            WindowInsets.Type.systemBars());
+                    top = bars.top;
+                    bottom = bars.bottom;
+                } else {
+                    top = insets.getSystemWindowInsetTop();
+                    bottom = insets.getSystemWindowInsetBottom();
+                }
+                insetColumn.setPadding(0, top, 0, 0);
+                FrameLayout.LayoutParams params =
+                        (FrameLayout.LayoutParams) insetColumn.getLayoutParams();
+                if (params != null) {
+                    params.bottomMargin = bottom;
+                    insetColumn.setLayoutParams(params);
+                }
+                return insets;
+            }
+        });
 
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
@@ -606,15 +640,26 @@ public class MainActivity extends Activity {
         root.addView(modeButton);
         root.addView(space(10));
 
+        // Fixed height so a longer password cannot shove the controls below it
+        // around. Without this every regeneration reflowed the page and the
+        // buttons visibly jumped. Long values shrink instead of wrapping onto
+        // an ever-growing number of lines.
+        ScrollView passwordBox = new ScrollView(this);
+        passwordBox.setBackground(glassCard());
+        passwordBox.setFillViewport(true);
+        LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, dp(Theme.PASSWORD_BOX_DP));
+        passwordBox.setLayoutParams(boxParams);
+        passwordBox.setVerticalScrollBarEnabled(false);
+
         passwordView = new TextView(this);
         passwordView.setText("--------");
         passwordView.setTextSize(Theme.SIZE_PASSWORD);
         passwordView.setTextColor(Theme.TEXT_ACCENT);
         passwordView.setTypeface(android.graphics.Typeface.MONOSPACE);
         passwordView.setGravity(Gravity.CENTER);
-        passwordView.setPadding(dp(8), dp(18), dp(8), dp(18));
-        passwordView.setBackground(glassCard());
-        root.addView(passwordView);
+        passwordView.setPadding(dp(8), dp(12), dp(8), dp(12));
+        passwordBox.addView(passwordView, new ScrollView.LayoutParams(-1, -2));
+        root.addView(passwordBox);
         typewriter = new Animations.Typewriter(passwordView);
 
         strengthView = new TextView(this);
@@ -822,12 +867,35 @@ public class MainActivity extends Activity {
             return;
         }
         typewriter.type(password);
+        fitPasswordText(password);
         int score = PasswordFactory.strength(password);
         StringBuilder stars = new StringBuilder();
         for (int i = 0; i < 5; i++) {
             stars.append(i < score ? "★" : "☆");
         }
         strengthView.setText(stars.toString());
+    }
+
+    /**
+     * Shrinks the password text until it fits the reserved box.
+     *
+     * The box height is fixed, so without this a long password would either be
+     * clipped or scroll, both of which are worse than a smaller font. The size
+     * only ever steps down to SIZE_PASSWORD_MIN; past that the box scrolls.
+     */
+    private void fitPasswordText(String password) {
+        if (passwordView == null) {
+            return;
+        }
+        int length = password == null ? 0 : password.length();
+        float size = Theme.SIZE_PASSWORD;
+        if (length > Theme.PASSWORD_FULL_FIT) {
+            // Scale down proportionally with how far past the comfortable
+            // length we are, clamped so the text never becomes unreadable.
+            float ratio = (float) Theme.PASSWORD_FULL_FIT / length;
+            size = Math.max(Theme.SIZE_PASSWORD_MIN, Theme.SIZE_PASSWORD * ratio);
+        }
+        passwordView.setTextSize(size);
     }
 
     /** Per-site salt, created on first use and stored in the clear. */

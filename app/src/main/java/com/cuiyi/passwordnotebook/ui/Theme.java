@@ -90,6 +90,20 @@ public final class Theme {
     public static final float SIZE_TINY = 11f;
     public static final float SIZE_PASSWORD = 32f;
 
+    /**
+     * Height reserved for the generated password. Fixed on purpose: the block
+     * used to grow with the text, so a long password pushed every control below
+     * it down and the whole page jumped on each regeneration. Sized for two
+     * lines, which covers the default 16 characters at full size.
+     */
+    public static final int PASSWORD_BOX_DP = 108;
+
+    /** Smallest size the password shrinks to before it starts truncating. */
+    public static final float SIZE_PASSWORD_MIN = 17f;
+
+    /** Longest password shown at full size before the type shrinks. */
+    public static final int PASSWORD_FULL_FIT = 18;
+
     // ---- controls ----
 
     public static final int BUTTON_BG = 0xFF1A3A2A;
