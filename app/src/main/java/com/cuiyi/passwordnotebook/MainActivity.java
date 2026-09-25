@@ -65,8 +65,184 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        prefs = getSharedPreferences("pwdnb", MODE_PRIVATE);
+        prefs = getSharedPreferences(VaultMigrator.PREF_FILE, MODE_PRIVATE);
         initUI();
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                requestUnlock();
+            }
+        });
+    }
+
+    // ==================== Vault Unlock ====================
+
+    /** 请求解锁：新建、迁移、解锁三种路径 */
+    private void requestUnlock() {
+        if (Vault.isUnlocked()) {
+            return;
+        }
+        if (Vault.isNewVault(prefs)) {
+            String raw = prefs.getString(VaultMigrator.KEY_RECORDS, "");
+            if (raw != null && !raw.isEmpty()) {
+                promptMigration();
+            } else {
+                promptCreatePassword();
+            }
+        } else {
+            promptUnlock();
+        }
+    }
+
+    /** 首次创建主密码 */
+    private void promptCreatePassword() {
+        final EditText p1 = new EditText(this);
+        p1.setHint("主密码（至少 8 位，务必牢记！丢失无法恢复）");
+        p1.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        final EditText p2 = new EditText(this);
+        p2.setHint("再次输入");
+        p2.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(8));
+        box.addView(p1);
+        box.addView(p2);
+        new AlertDialog.Builder(this)
+            .setTitle("设置主密码")
+            .setMessage("抠纵密码将用于加密整个熵库。"
+                + "它不会被保存，一旦遗忘将无法解密数据。")
+            .setCancelable(false)
+            .setView(box)
+            .setPositiveButton("确定", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int w) {
+                    String a = p1.getText().toString();
+                    String b = p2.getText().toString();
+                    if (a.length() < 8) {
+                        toast("主密码至少 8 位");
+                        promptCreatePassword();
+                        return;
+                    }
+                    if (!a.equals(b)) {
+                        toast("两次输入不一致");
+                        promptCreatePassword();
+                        return;
+                    }
+                    char[] mp = a.toCharArray();
+                    try {
+                        Vault.initNew(prefs, mp);
+                        toast("主密码已设置");
+                        refreshRecords();
+                    } catch (Exception e) {
+                        toast("初始化失败：" + e.getMessage());
+                    } finally {
+                        KeyDerivation.wipe(mp);
+                        a = null;
+                        b = null;
+                    }
+                }
+            })
+            .show();
+    }
+
+    /** 旧数据迁移向导 */
+    private void promptMigration() {
+        new AlertDialog.Builder(this)
+            .setTitle("需要迁移旧数据")
+            .setMessage("检测到旧版本数据。旧版本使用公开常量派生密钥，"
+                + "存在安全风险。迁移后将改用您的主密码保护。\n\n"
+                + "迁移过程不会丢失数据（事务式：失败则保持原样）。\n\n"
+                + "⚠ 注意：旧数据在迁移前处于低安全状态，"
+                + "建议迁移后立即更换所有相关密码。")
+            .setCancelable(false)
+            .setPositiveButton("立即迁移", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int w) {
+                    promptMigrationPassword();
+                }
+            })
+            .show();
+    }
+
+    private void promptMigrationPassword() {
+        final EditText p1 = new EditText(this);
+        p1.setHint("设置新主密码（至少 8 位）");
+        p1.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        final EditText p2 = new EditText(this);
+        p2.setHint("再次输入");
+        p2.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(8));
+        box.addView(p1);
+        box.addView(p2);
+        new AlertDialog.Builder(this)
+            .setTitle("设置新主密码")
+            .setCancelable(false)
+            .setView(box)
+            .setPositiveButton("开始迁移", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int w) {
+                    String a = p1.getText().toString();
+                    String b = p2.getText().toString();
+                    if (a.length() < 8) { toast("主密码至少 8 位"); promptMigrationPassword(); return; }
+                    if (!a.equals(b)) { toast("两次输入不一致"); promptMigrationPassword(); return; }
+                    char[] mp = a.toCharArray();
+                    try {
+                        String oldCore = prefs.getString("coreWord", "");
+                        String oldSalt = prefs.getString("customSalt", "");
+                        String err = Vault.migrate(prefs, mp, oldCore, oldSalt);
+                        if (err != null) {
+                            toast(err);
+                            return;
+                        }
+                        toast("迁移完成");
+                        refreshRecords();
+                    } finally {
+                        KeyDerivation.wipe(mp);
+                        a = null;
+                        b = null;
+                    }
+                }
+            })
+            .show();
+    }
+
+    /** 已有熵库解锁 */
+    private void promptUnlock() {
+        final EditText p1 = new EditText(this);
+        p1.setHint("主密码");
+        p1.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(8));
+        box.addView(p1);
+        new AlertDialog.Builder(this)
+            .setTitle("解锁熵库")
+            .setCancelable(false)
+            .setView(box)
+            .setPositiveButton("解锁", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int w) {
+                    String a = p1.getText().toString();
+                    char[] mp = a.toCharArray();
+                    String err;
+                    try {
+                        err = Vault.unlock(prefs, mp);
+                    } finally {
+                        KeyDerivation.wipe(mp);
+                        a = null;
+                    }
+                    if (err == null) {
+                        toast("已解锁");
+                        refreshRecords();
+                    } else {
+                        toast(err);
+                        promptUnlock();
+                    }
+                }
+            })
+            .show();
     }
 
     // ==================== UI Initialization ====================
@@ -148,8 +324,6 @@ public class MainActivity extends Activity {
         pg.setOrientation(LinearLayout.VERTICAL);
         pg.setBackgroundColor(0x661a3a2a);
         pg.setPadding(dp(16), dp(16), dp(16), dp(24));
-        pg.setRadius(dp(12));
-        // Use a simple background with rounded corners
         pg.setBackgroundColor(0x661a3a2a);
 
         // Tab switching: Hashed / Periodic / Random
@@ -255,7 +429,8 @@ public class MainActivity extends Activity {
         lbl1.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
         row1.addView(lbl1);
         etCoreWord = new TextView(this);
-        etCoreWord.setText(prefs.getString("coreWord", ""));
+        String cw = Vault.getCoreWord(prefs);
+        etCoreWord.setText(cw != null ? cw : "");
         etCoreWord.setTextColor(0xffd0ffd0);
         etCoreWord.setTextSize(14);
         etCoreWord.setPadding(dp(8), dp(4), dp(8), dp(4));
@@ -273,7 +448,9 @@ public class MainActivity extends Activity {
             b.setPositiveButton("确定", (d, w) -> {
                 String val = input.getText().toString().trim();
                 etCoreWord.setText(val);
-                prefs.edit().putString("coreWord", val).commit();
+                if (!Vault.putCoreWord(prefs, val)) {
+                    toast("核心词加密存储失败");
+                }
             });
             b.show();
         });
@@ -291,7 +468,8 @@ public class MainActivity extends Activity {
         swSalt.setOnCheckedChangeListener((b, isChecked) -> prefs.edit().putBoolean("useSalt", isChecked).commit());
         saltRow.addView(swSalt);
         etCustomSalt = new EditText(this);
-        etCustomSalt.setText(prefs.getString("customSalt", "pwdnb@2026!salt#v1.5"));
+        String cs = Vault.getCustomSalt(prefs);
+        etCustomSalt.setText(cs != null ? cs : "");
         etCustomSalt.setTextColor(0xffd0ffd0);
         etCustomSalt.setTextSize(12);
         etCustomSalt.setPadding(dp(6), dp(4), dp(6), dp(4));
@@ -309,7 +487,9 @@ public class MainActivity extends Activity {
             StringBuilder s = new StringBuilder();
             for (int i = 0; i < 8; i++) s.append(chars.charAt(r.nextInt(chars.length())));
             etCustomSalt.setText(s.toString());
-            prefs.edit().putString("customSalt", s.toString()).commit();
+            if (!Vault.putCustomSalt(prefs, s.toString())) {
+                toast("盐加密存储失败");
+            }
         });
         saltRow.addView(btnRandomSalt);
         settings.addView(saltRow);
@@ -413,6 +593,18 @@ public class MainActivity extends Activity {
         return settings;
     }
 
+    /** 获取或创建站点随机盐（存于 SharedPreferences，非机密） */
+    private byte[] getOrCreateSiteSalt(String siteId) throws Exception {
+        String key = "siteSalt_" + siteId;
+        String b64 = prefs.getString(key, null);
+        if (b64 != null && !b64.isEmpty()) {
+            return android.util.Base64.decode(b64, android.util.Base64.NO_WRAP);
+        }
+        byte[] s = PasswordGenerator.newSiteSalt();
+        prefs.edit().putString(key, android.util.Base64.encodeToString(s, android.util.Base64.NO_WRAP)).commit();
+        return s;
+    }
+
     private void doGen() {
         String coreWord = etCoreWord.getText().toString().trim();
         Calendar cal = Calendar.getInstance();
@@ -423,11 +615,23 @@ public class MainActivity extends Activity {
         switch (currentMode) {
             case "哈希":
                 if (coreWord.isEmpty()) { toast("请输入核心词"); return; }
-                result = PasswordGenerator.generateHashed(coreWord, year, week);
+                try {
+                    byte[] s1 = getOrCreateSiteSalt("hashed");
+                    result = PasswordGenerator.generateDerived(coreWord, "hashed", s1, year, week, 16);
+                } catch (Exception e) {
+                    toast("生成失败：" + e.getMessage());
+                    return;
+                }
                 break;
             case "周期":
                 String salt = swSalt.isChecked() ? etCustomSalt.getText().toString() : "";
-                result = PasswordGenerator.generatePeriodic(year, week, salt);
+                try {
+                    byte[] s2 = getOrCreateSiteSalt("periodic");
+                    result = PasswordGenerator.generateDerived(salt, "periodic", s2, year, week, 10);
+                } catch (Exception e) {
+                    toast("生成失败：" + e.getMessage());
+                    return;
+                }
                 break;
             case "随机":
                 int len = seekLen.getProgress();
@@ -482,7 +686,18 @@ public class MainActivity extends Activity {
     private void refreshRecords() {
         if (recordList == null) return;
         recordList.removeAllViews();
-        String raw = prefs.getString("records", "");
+        if (!Vault.isUnlocked()) {
+            recordList.removeAllViews();
+            TextView lk = new TextView(this);
+            lk.setText("熵库已锁定，请先输入主密码");
+            lk.setTextColor(0x88a0ffa0);
+            lk.setTextSize(14);
+            lk.setGravity(Gravity.CENTER);
+            lk.setPadding(0, dp(24), 0, dp(24));
+            recordList.addView(lk);
+            return;
+        }
+        String raw = prefs.getString(VaultMigrator.KEY_RECORDS, "");
         if (raw.isEmpty()) {
             TextView empty = new TextView(this);
             empty.setText("暂无记录，在生成页保存密码");
@@ -517,6 +732,7 @@ public class MainActivity extends Activity {
             if (!query.isEmpty() && !name.toLowerCase().contains(query)) continue;
 
             final String fLine = line;
+            final String fName = name;
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
             card.setBackgroundColor(0x661a3a2a);
@@ -556,7 +772,7 @@ public class MainActivity extends Activity {
             btnDel.setOnClickListener(v -> {
                 new AlertDialog.Builder(this)
                     .setTitle("确认删除")
-                    .setMessage("确定删除「" + name + "」？")
+                    .setMessage("确定删除「" + fName + "」？")
                     .setPositiveButton("删除", (d, w) -> delRecord(fLine))
                     .setNegativeButton("取消", null)
                     .show();
@@ -587,22 +803,25 @@ public class MainActivity extends Activity {
     }
 
     private String extractPassword(String line) {
+        if (!Vault.isUnlocked()) {
+            toast("熵库已锁定");
+            return null;
+        }
         try {
             if (line.contains("\u2e41")) {
-                // Encrypted format: name⹁encryptedData
                 String[] parts = line.split("\u2e41", 2);
                 if (parts.length >= 2) {
-                    String decrypted = CryptoHelper.decrypt(parts[1]);
-                    if (decrypted != null && !decrypted.equals(parts[1])) {
-                        String[] fields = decrypted.split("\t");
-                        return fields.length >= 2 ? fields[1] : fields[0];
-                    }
+                    String decrypted = Vault.decryptLine(parts[1]);
+                    String[] fields = decrypted.split("\t");
+                    return fields.length >= 2 ? fields[1] : fields[0];
                 }
+                return null;
             }
             String sep = line.contains("\t") ? "\t" : ",";
             String[] parts = line.split(sep);
             return parts.length >= 2 ? parts[1].trim() : null;
-        } catch (Exception e) {
+        } catch (CryptoHelper.CryptoException e) {
+            toast("解密失败，数据可能已损坏");
             return null;
         }
     }
@@ -613,23 +832,36 @@ public class MainActivity extends Activity {
     }
 
     private void addRec(String plainLine) {
-        String ex = prefs.getString("records", "");
-        String encLine = CryptoHelper.encrypt(plainLine);
-        // Store encrypted
+        if (!Vault.isUnlocked()) {
+            toast("熵库已锁定，无法写入");
+            return;
+        }
+        String encLine;
+        try {
+            encLine = Vault.encryptLine(plainLine);
+        } catch (CryptoHelper.CryptoException e) {
+            toast("加密失败，未保存：" + e.getMessage());
+            return;
+        }
+        String ex = prefs.getString(VaultMigrator.KEY_RECORDS, "");
         String newRec = (ex.isEmpty() ? "" : ex + "\n") + encLine;
-        prefs.edit().putString("records", newRec).commit();
+        prefs.edit().putString(VaultMigrator.KEY_RECORDS, newRec).commit();
         refreshRecords();
     }
 
     private void addRecRaw(String encLine) {
-        String ex = prefs.getString("records", "");
+        if (!Vault.isUnlocked()) {
+            toast("熵库已锁定，无法写入");
+            return;
+        }
+        String ex = prefs.getString(VaultMigrator.KEY_RECORDS, "");
         String newRec = (ex.isEmpty() ? "" : ex + "\n") + encLine;
-        prefs.edit().putString("records", newRec).commit();
+        prefs.edit().putString(VaultMigrator.KEY_RECORDS, newRec).commit();
         refreshRecords();
     }
 
     private void delRecord(String line) {
-        String ex = prefs.getString("records", "");
+        String ex = prefs.getString(VaultMigrator.KEY_RECORDS, "");
         StringBuilder sb = new StringBuilder();
         String[] lines = ex.split("\n");
         for (String l : lines) {
@@ -638,7 +870,7 @@ public class MainActivity extends Activity {
                 sb.append(l);
             }
         }
-        prefs.edit().putString("records", sb.toString()).commit();
+        prefs.edit().putString(VaultMigrator.KEY_RECORDS, sb.toString()).commit();
         refreshRecords();
     }
 
@@ -664,10 +896,12 @@ public class MainActivity extends Activity {
         if (oldLine.contains("\u2e41")) {
             String[] parts = oldLine.split("\u2e41", 2);
             oldName = parts[0];
-            String dec = CryptoHelper.decrypt(parts[1]);
-            if (dec != null && !dec.equals(parts[1])) {
+            try {
+                String dec = Vault.decryptLine(parts[1]);
                 String[] fields = dec.split("\t");
                 oldPwd = fields.length >= 2 ? fields[1] : "";
+            } catch (CryptoHelper.CryptoException e) {
+                toast("解密失败，无法读取原密码");
             }
         } else {
             String sep = oldLine.contains("\t") ? "\t" : ",";
@@ -792,7 +1026,8 @@ public class MainActivity extends Activity {
         btnImport.setOnClickListener(v -> {
             String text = etImport.getText().toString().trim();
             if (text.isEmpty()) { toast("请粘贴要导入的数据"); return; }
-            String ex = prefs.getString("records", "");
+            if (!Vault.isUnlocked()) { toast("熵库已锁定，无法导入"); return; }
+            String ex = prefs.getString(VaultMigrator.KEY_RECORDS, "");
             String[] lines = text.split("\n");
             int count = 0;
             for (String ln : lines) {
@@ -876,8 +1111,9 @@ public class MainActivity extends Activity {
         btnExport.setOnClickListener(v -> {
             boolean doEncrypt = swEncExport.isChecked();
             String fn = doEncrypt ? "PasswordNotebook_backup_enc.txt" : "PasswordNotebook_backup.txt";
-            String raw = prefs.getString("records", "");
+            String raw = prefs.getString(VaultMigrator.KEY_RECORDS, "");
             try {
+                if (!doEncrypt && !Vault.isUnlocked()) { toast("熵库已锁定，无法导出明文"); return; }
                 File dir = new File("/sdcard/Download");
                 if (!dir.exists()) dir.mkdirs();
                 File f = new File(dir, fn);
@@ -890,8 +1126,8 @@ public class MainActivity extends Activity {
                         if (line.trim().isEmpty()) continue;
                         if (line.contains("\u2e41")) {
                             String[] parts = line.split("\u2e41", 2);
-                            String dec = parts.length >= 2 ? CryptoHelper.decrypt(parts[1]) : line;
-                            fw.write(parts[0] + "\t" + (dec != null && !dec.equals(parts[1]) ? dec : line));
+                            String dec = Vault.decryptLine(parts[1]);
+                            fw.write(parts[0] + "\t" + dec);
                         } else {
                             fw.write(line);
                         }
