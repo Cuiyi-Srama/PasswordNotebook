@@ -865,19 +865,18 @@ public class MainActivity extends Activity {
         LinearLayout box = column();
         box.addView(section("用哪些字符"));
 
-        // Two by two rather than one row of four: the labels differ in width,
-        // so a single row left the buttons visibly misaligned and "字母+数字"
-        // wrapped onto two lines.
-        LinearLayout presetTop = row();
-        presetTop.addView(presetButton("纯数字\n用于银行卡、PIN", false, false, true, false, false));
-        presetTop.addView(presetButton("纯字母\n用于老式密码框", true, true, false, false, false));
-        box.addView(presetTop);
-
-        LinearLayout presetBottom = row();
-        presetBottom.addView(presetButton("字母+数字\n通用", true, true, true, false, false));
-        presetBottom.addView(presetButton("全部字符\n最安全", true, true, true, true, true));
-        box.addView(presetBottom);
-        box.addView(space(8));
+        // Four short chips on one line. The earlier two by two grid added a
+        // second row of tall tiles whose captions repeated what the switches
+        // below already say, so the presets took more room than the controls
+        // they were meant to shortcut. Short labels fit without wrapping, which
+        // was the only reason the grid existed.
+        LinearLayout presets = row();
+        presets.addView(presetChip("纯数字", false, false, true, false, false));
+        presets.addView(presetChip("纯字母", true, true, false, false, false));
+        presets.addView(presetChip("字母+数字", true, true, true, false, false));
+        presets.addView(presetChip("全部", true, true, true, true, true));
+        box.addView(presets);
+        box.addView(space(6));
 
         box.addView(space(2));
         switchUpper = addSwitch(box, "大写 A-Z", KEY_GEN_UPPER, true);
@@ -898,25 +897,24 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * One preset tile.
+     * One preset chip.
      *
-     * Fixed equal weight and a fixed two-line shape so all four sit on the same
-     * grid regardless of label length.
+     * Single line and shallower than a normal button so the row of four reads
+     * as a shortcut above the switches rather than as a block of its own. Equal
+     * weight keeps them the same width even though the labels differ.
      */
-    private TextView presetButton(String label, final boolean upper, final boolean lower,
-                                  final boolean digits, final boolean common,
-                                  final boolean extended) {
+    private TextView presetChip(String label, final boolean upper, final boolean lower,
+                                final boolean digits, final boolean common,
+                                final boolean extended) {
         TextView view = button(label, Theme.TEXT_ACCENT);
-        view.setTextSize(Theme.SIZE_SMALL);
+        view.setTextSize(Theme.SIZE_TINY);
         view.setGravity(Gravity.CENTER);
-        view.setLines(2);
-        // Outlined rather than filled so four tiles in a grid do not read as a
-        // single solid block, which they did when the borders touched.
+        view.setSingleLine(true);
+        view.setPadding(dp(4), 0, dp(4), 0);
         view.setBackground(glassCard());
+        view.setMinHeight(0);
         LinearLayout.LayoutParams params = weightedParams();
-        params.height = dp(54);
-        params.topMargin = dp(4);
-        params.bottomMargin = dp(4);
+        params.height = dp(32);
         view.setLayoutParams(params);
         view.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1062,9 +1060,9 @@ public class MainActivity extends Activity {
         // switch carries its own one-line explanation, and the icon spells out
         // the consequence for anyone who wants it.
         box.addView(space(12));
-        box.addView(buildPeriodToggle());
+        addSpaced(box, buildPeriodToggle());
         if (periodicRollEnabled) {
-            box.addView(buildPeriodSelector());
+            addSpaced(box, buildPeriodSelector());
         }
         return box;
     }
@@ -1820,8 +1818,8 @@ public class MainActivity extends Activity {
         root.addView(section("安全"));
 
         root.addView(space(6));
-        root.addView(buildBiometricRow());
-        root.addView(buildBackgroundRow());
+        addSpaced(root, buildBiometricRow());
+        addSpaced(root, buildBackgroundRow());
         root.addView(space(6));
         root.addView(fullButton("立即锁定", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
@@ -2283,6 +2281,21 @@ public class MainActivity extends Activity {
         layout.setOrientation(LinearLayout.HORIZONTAL);
         layout.setGravity(Gravity.CENTER_VERTICAL);
         return layout;
+    }
+
+    /**
+     * Gives a stacked card the same breathing room its neighbours have.
+     *
+     * Used by the settings and generator cards, which are added straight to a
+     * vertical container. Without it two adjacent cards each draw their own
+     * rounded border with nothing between them and the pair reads as one thick
+     * outline instead of two separate rows.
+     */
+    private void addSpaced(LinearLayout parent, View card) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.bottomMargin = dp(Theme.SPACE_BLOCK);
+        card.setLayoutParams(params);
+        parent.addView(card);
     }
 
     /**
