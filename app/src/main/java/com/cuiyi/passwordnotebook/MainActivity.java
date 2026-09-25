@@ -34,6 +34,7 @@ import com.cuiyi.passwordnotebook.data.Vault;
 import com.cuiyi.passwordnotebook.gen.PasswordFactory;
 import com.cuiyi.passwordnotebook.ui.Animations;
 import com.cuiyi.passwordnotebook.ui.CyberRainView;
+import com.cuiyi.passwordnotebook.ui.FilePicker;
 import com.cuiyi.passwordnotebook.ui.Theme;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -955,27 +956,156 @@ public class MainActivity extends Activity {
 
     // ---------------- import and export ----------------
 
+    /**
+     * Import from a pasted blob or from a file on disk.
+     *
+     * Two entry points rather than one, because the old build only offered a
+     * paste box and users could not find where their backup had gone. The file
+     * route reads the text itself so a 9 KB backup does not have to survive the
+     * system clipboard.
+     */
     private void askImportLegacy() {
-        final EditText input = textInput("粘贴旧版备份或导出的内容");
-        input.setMinLines(6);
-        input.setGravity(Gravity.TOP);
-
-        LinearLayout box = column();
-        box.addView(hint("支持：旧版加密备份、旧版逐行加密文本、Tab/逗号/中文逗号分隔的明文，"
-                + "以及“名称一行、密码一行”的双行格式。重复条目会自动跳过。"));
-        box.addView(input);
-
         new AlertDialog.Builder(this)
                 .setTitle("导入旧版数据")
-                .setView(box)
-                .setPositiveButton("解析并导入", new DialogInterface.OnClickListener() {
+                .setMessage("支持：旧版加密备份、旧版逐行加密文本、Tab/逗号/中文逗号分隔的明文，"
+                        + "以及“名称一行、密码一行”的双行格式。重复条目会自动跳过。")
+                .setPositiveButton("选择文件", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        runLegacyImport(input.getText().toString());
+                        pickBackupFile();
+                    }
+                })
+                .setNeutralButton("粘贴文本", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        askPasteImport();
                     }
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    private void pickBackupFile() {
+        FilePicker.show(this, new FilePicker.Listener() {
+            @Override
+            public void onPicked(File file) {
+                readAndImport(file);
+            }
+        });
+    }
+
+    private void readAndImport(File file) {
+        try {
+            String text = readText(file);
+            if (text.trim().isEmpty()) {
+                toast("文件是空的");
+                return;
+            }
+            confirmImport(text, file.getName());
+        } catch (Exception e) {
+            toast("读取失败：" + e.getMessage());
+        }
+    }
+
+    private String readText(File file) throws Exception {
+        java.io.FileInputStream in = new java.io.FileInputStream(file);
+        try {
+            java.io.InputStreamReader reader = new java.io.InputStreamReader(in, UTF8);
+            StringBuilder sb = new StringBuilder((int) Math.max(256, file.length()));
+            char[] buffer = new char[8192];
+            int read;
+            while ((read = reader.read(buffer)) > 0) {
+                sb.append(buffer, 0, read);
+            }
+            return sb.toString();
+        } finally {
+            in.close();
+        }
+    }
+
+    private void askPasteImport() {
+        final EditText input = textInput("粘贴备份内容");
+        // Tall enough to see a full 38-entry backup without scrolling blind.
+        input.setMinLines(10);
+        input.setMaxLines(14);
+        input.setGravity(Gravity.TOP);
+        input.setTextSize(Theme.SIZE_SMALL);
+
+        LinearLayout box = column();
+        box.addView(input);
+        box.addView(hint("提示：内容较长时用“选择文件”导入更可靠。"));
+
+        new AlertDialog.Builder(this)
+                .setTitle("粘贴导入")
+                .setView(box)
+                .setPositiveButton("解析并导入", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        confirmImport(input.getText().toString(), "粘贴内容");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /**
+     * Parse first, then tell the user what was found before writing anything.
+     *
+     * The old flow wrote straight to storage, so a wrong guess about the format
+     * either silently imported garbage or reported a bare failure with no clue
+     * about why. Showing the counts first makes a bad parse obvious.
+     */
+    private void confirmImport(String text, String sourceName) {
+        LegacyReader.Result parsed = LegacyReader.parse(text);
+        if (parsed.entries.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("没有解析到记录")
+                    .setMessage("来源：" + sourceName + "\n\n"
+                            + parsed.describe() + "\n\n"
+                            + "可能的原因：文件被截断、内容不是本应用的备份，"
+                            + "或者复制时只复制了一部分。")
+                    .setPositiveButton("知道了", null)
+                    .show();
+            return;
+        }
+
+        StringBuilder preview = new StringBuilder();
+        preview.append("来源：").append(sourceName).append("\n\n");
+        preview.append(parsed.describe()).append("\n\n");
+        preview.append("前几条：\n");
+        int shown = Math.min(5, parsed.entries.size());
+        for (int i = 0; i < shown; i++) {
+            Entry entry = parsed.entries.get(i);
+            preview.append("  ").append(i + 1).append(". ")
+                    .append(entry.displayTitle()).append("\n");
+        }
+        if (parsed.entries.size() > shown) {
+            preview.append("  …还有 ").append(parsed.entries.size() - shown).append(" 条\n");
+        }
+
+        final LegacyReader.Result toImport = parsed;
+        new AlertDialog.Builder(this)
+                .setTitle("确认导入")
+                .setMessage(preview.toString())
+                .setPositiveButton("导入", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        commitImport(toImport);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void commitImport(LegacyReader.Result parsed) {
+        try {
+            int added = Vault.addAllSkippingDuplicates(this, parsed.entries);
+            int duplicates = parsed.entries.size() - added;
+            toast("导入 " + added + " 条" + (duplicates > 0 ? "，跳过重复 " + duplicates : ""));
+            showTab(1);
+        } catch (Exception e) {
+            toast("写入失败：" + e.getMessage());
+        }
     }
 
     private void runLegacyImport(String text) {
@@ -1001,12 +1131,23 @@ public class MainActivity extends Activity {
     private void exportSealed() {
         try {
             String sealed = Vault.exportSealed(this);
-            File target = new File(downloadDir(), SEALED_EXPORT_NAME);
-            writeText(target, sealed);
-            toast("已导出到 " + target.getName() + "（加密，可安全备份）");
+            File target = writeTextAnywhere(SEALED_EXPORT_NAME, sealed);
+            showExportDone("加密备份已导出", target, true);
         } catch (Exception e) {
             toast("导出失败：" + e.getMessage());
         }
+    }
+
+    /** Report the full path so the user can actually find the file again. */
+    private void showExportDone(String title, File target, boolean safeToShare) {
+        String extra = safeToShare
+                ? "这份文件本身是加密的，可以安全地放进网盘。"
+                : "这份文件是明文的，用完请立即删除。";
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage("位置：\n" + target.getAbsolutePath() + "\n\n" + extra)
+                .setPositiveButton("知道了", null)
+                .show();
     }
 
     private void askExportPlain() {
@@ -1035,9 +1176,8 @@ public class MainActivity extends Activity {
                         .append(csvField(entry.tag)).append(',')
                         .append(entry.updatedAt).append('\n');
             }
-            File target = new File(downloadDir(), PLAIN_EXPORT_NAME);
-            writeText(target, csv.toString());
-            toast("已导出明文 CSV，请尽快删除");
+            File target = writeTextAnywhere(PLAIN_EXPORT_NAME, csv.toString());
+            showExportDone("明文 CSV 已导出", target, false);
         } catch (Exception e) {
             toast("导出失败：" + e.getMessage());
         }
@@ -1094,23 +1234,63 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private File downloadDir() {
-        File dir = new File("/sdcard/Download");
-        if (!dir.exists() && !dir.mkdirs()) {
-            return new File(getExternalFilesDir(null), "");
+    /**
+     * Where to put exports.
+     *
+     * Public Download is the friendliest place, but on newer Android releases
+     * writing there can fail even with the legacy flag, so the app falls back
+     * to its own external directory rather than reporting a bare failure. The
+     * caller shows whichever path was actually used.
+     */
+    private List<File> exportCandidates() {
+        List<File> candidates = new ArrayList<File>();
+        candidates.add(new File("/sdcard/Download"));
+        try {
+            File external = getExternalFilesDir(null);
+            if (external != null) {
+                candidates.add(external);
+            }
+        } catch (Exception ignored) {
+            // no external dir on this device
         }
-        return dir;
+        candidates.add(getFilesDir());
+        return candidates;
     }
 
-    private void writeText(File target, String text) throws Exception {
-        FileOutputStream out = new FileOutputStream(target);
-        try {
-            OutputStreamWriter writer = new OutputStreamWriter(out, UTF8);
-            writer.write(text);
-            writer.flush();
-        } finally {
-            out.close();
+    /**
+     * Write the first location that accepts the data.
+     *
+     * @return the file that was written
+     * @throws Exception with the last failure reason when every location fails
+     */
+    private File writeTextAnywhere(String fileName, String text) throws Exception {
+        Exception lastFailure = null;
+        for (File dir : exportCandidates()) {
+            if (!dir.exists() && !dir.mkdirs()) {
+                continue;
+            }
+            if (!dir.canWrite()) {
+                continue;
+            }
+            File target = new File(dir, fileName);
+            try {
+                FileOutputStream out = new FileOutputStream(target);
+                try {
+                    OutputStreamWriter writer = new OutputStreamWriter(out, UTF8);
+                    writer.write(text);
+                    writer.flush();
+                } finally {
+                    out.close();
+                }
+                return target;
+            } catch (Exception e) {
+                lastFailure = e;
+            }
         }
+        if (lastFailure != null) {
+            throw lastFailure;
+        }
+        throw new Exception("没有可写入的目录");
     }
 
     // ---------------- small helpers ----------------
