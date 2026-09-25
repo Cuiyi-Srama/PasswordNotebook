@@ -1,13 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.cuiyi.passwordnotebook"
+    android:versionCode="4"
+    android:versionName="4.0">
+
+    <uses-sdk
+        android:minSdkVersion="21"
+        android:targetSdkVersion="34" />
+
     <application
-        android:label="密码の小本"
+        android:label="密码小本"
         android:icon="@mipmap/ic_launcher"
-        android:debuggable="true">
+        android:allowBackup="false"
+        android:theme="@style/AppTheme">
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

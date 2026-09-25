@@ -1,24 +1,44 @@
-apply plugin: 'com.android.application'
+plugins {
+    id 'com.android.application'
+}
 
 android {
     namespace 'com.cuiyi.passwordnotebook'
-    compileSdk 35
+    compileSdk 34
 
     defaultConfig {
         applicationId 'com.cuiyi.passwordnotebook'
         minSdk 21
-        targetSdk 35
+        targetSdk 34
         versionCode 4
-        versionName '3.0'
+        versionName '4.0'
+    }
+
+    signingConfigs {
+        release {
+            if (System.getenv('KEYSTORE_PASSWORD')) {
+                storeFile file('../release.keystore')
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
     }
 
     buildTypes {
+        release {
+            minifyEnabled false
+            if (System.getenv('KEYSTORE_PASSWORD')) {
+                signingConfig signingConfigs.release
+            }
+        }
         debug {
             debuggable true
         }
     }
-}
 
-dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
 }

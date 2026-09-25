@@ -1,159 +1,263 @@
 package com.cuiyi.passwordnotebook;
 
+import android.content.Context;
 import android.content.SharedPreferences;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.nio.charset.Charset;
 import java.security.GeneralSecurityException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * \u71b5\u5e93\u8bbf\u95ee\u5c42 v3.0
+ * The single entry point to encrypted storage. v4.
  *
- * \u5c06\u201c\u4e3b\u5bc6\u7801\u89e3\u9501\u201d\u3001\u201c\u8bb0\u5f55\u52a0\u89e3\u5bc6\u201d\u3001\u201c\u65e7\u6570\u636e\u8fc1\u79fb\u201d\u5c01\u88c5\u6210\u5355\u4e00\u5165\u53e3\uff0c
- * MainActivity \u53ea\u9700\u8c03\u7528\u672c\u7c7b\uff0c\u907f\u514d\u5bc6\u94a5\u5728 UI \u5c42\u6d41\u8f6c\u3002
+ * State machine:
+ *   NEW      -> no vault file yet, caller must call create()
+ *   LOCKED   -> vault exists, key not in memory
+ *   UNLOCKED -> key held in memory, entries readable
+ *
+ * The derived key lives only here and only in memory. lock() wipes it.
  */
 public final class Vault {
 
-    /** \u89e3\u9501\u72b6\u6001\uff1a\u5bc6\u94a5\u4ec5\u5728\u5185\u5b58\uff0c\u4e0d\u843d\u76d8 */
+    public static final String VAULT_FILE = "vault.pwdnb";
+
+    private static final Charset UTF8 = Charset.forName("UTF-8");
+    private static final String PREF = "pwd_nb_v4";
+    private static final String PREF_ITERATIONS = "iterations";
+
+    /** Cached key. Null whenever the vault is locked. */
     private static byte[] sKey;
+    /** Cached decrypted entries, dropped on lock. */
+    private static List<Entry> sEntries;
+    private static File sFile;
 
     private Vault() {
         throw new AssertionError("no instance");
     }
 
-    /** \u662f\u5426\u5df2\u89e3\u9501 */
+    public static synchronized File file(Context context) {
+        if (sFile == null) {
+            sFile = new File(context.getFilesDir(), VAULT_FILE);
+        }
+        return sFile;
+    }
+
+    public static synchronized boolean exists(Context context) {
+        return file(context).exists() && file(context).length() > 0;
+    }
+
     public static synchronized boolean isUnlocked() {
         return sKey != null;
     }
 
-    /** \u9501\u5b9a\u5e76\u64e6\u9664\u5185\u5b58\u4e2d\u7684\u5bc6\u94a5 */
+    /** Drop the key and the plaintext entries from memory. */
     public static synchronized void lock() {
         KeyDerivation.wipe(sKey);
         sKey = null;
-    }
-
-    /** \u83b7\u53d6\u5f53\u524d\u5bc6\u94a5\u5f15\u7528\uff08\u672a\u89e3\u9501\u8fd4\u56de null\uff09 */
-    public static synchronized byte[] key() {
-        return sKey;
-    }
-
-    /** \u662f\u5426\u9700\u8981\u65b0\u5efa\u71b5\u5e93\uff08\u9996\u6b21\u4f7f\u7528 / \u65e7\u6570\u636e\u5df2\u8fc1\u79fb\u5b8c\u6bd5\uff09 */
-    public static boolean isNewVault(SharedPreferences prefs) {
-        return prefs.getInt(VaultMigrator.KEY_VERSION, VaultMigrator.VAULT_VERSION_LEGACY)
-                < VaultMigrator.VAULT_VERSION;
-    }
-
-    /**
-     * \u9996\u6b21\u521d\u59cb\u5316\uff1a\u7528\u4e3b\u5bc6\u7801\u521b\u5efa\u65b0\u71b5\u5e93\u3002
-     * \u82e5\u5df2\u6709\u65e7\u6570\u636e\uff0c\u8bf7\u5148\u8c03用 migrate()\u3002
-     */
-    public static synchronized String initNew(SharedPreferences prefs, char[] masterPassword)
-            throws GeneralSecurityException {
-        byte[] salt = KeyDerivation.newSalt();
-        int iters = KeyDerivation.calibrate(masterPassword, salt, 300);
-        byte[] key = KeyDerivation.deriveKey(masterPassword, salt, iters);
-        SharedPreferences.Editor ed = prefs.edit();
-        ed.putInt(VaultMigrator.KEY_VERSION, VaultMigrator.VAULT_VERSION);
-        ed.putString(VaultMigrator.KEY_SALT,
-                android.util.Base64.encodeToString(salt, android.util.Base64.NO_WRAP));
-        ed.putInt(VaultMigrator.KEY_ITER, iters);
-        ed.putString(VaultMigrator.KEY_VERIFIER, VaultMigrator.buildVerifier(key));
-        if (!ed.commit()) {
-            KeyDerivation.wipe(key);
-            throw new GeneralSecurityException("failed to persist vault metadata");
+        if (sEntries != null) {
+            VaultCrypto.wipeList(sEntries);
+            sEntries = null;
         }
+    }
+
+    /** Create a brand new vault. Returns the iteration count that was used. */
+    public static synchronized int create(Context context, char[] masterPassword)
+            throws CryptoException, GeneralSecurityException, IOException {
+        byte[] salt = KeyDerivation.newSalt();
+        int iterations = KeyDerivation.calibrate(masterPassword, salt, 300);
+        byte[] key = KeyDerivation.derive(masterPassword, salt, iterations);
+        List<Entry> empty = new ArrayList<Entry>();
+        write(context, empty, key, salt, iterations);
         KeyDerivation.wipe(sKey);
         sKey = key;
-        return "OK";
+        sEntries = empty;
+        rememberIterations(context, iterations);
+        return iterations;
     }
 
     /**
-     * \u7528\u4e3b\u5bc6\u7801\u89e3\u9501\u5df2\u6709\u71b5\u5e93\u3002
+     * Unlock an existing vault.
      *
-     * @return null \u8868\u793a\u6210\u529f\uff1b\u5426\u5219\u8fd4\u56de\u9519\u8bef\u63cf\u8ff0
+     * @return true on success, false when the password is wrong
      */
-    public static synchronized String unlock(SharedPreferences prefs, char[] masterPassword) {
-        byte[] salt = VaultMigrator.getSalt(prefs);
-        if (salt == null) {
-            return "\u71b5\u5e93\u5143\u6570\u636e\u7f3a\u5931\uff08salt\uff09";
+    public static synchronized boolean unlock(Context context, char[] masterPassword)
+            throws CryptoException, GeneralSecurityException, IOException {
+        String raw = readText(file(context));
+        VaultCrypto.Header header = VaultCrypto.readHeader(raw);
+        if (header == null) {
+            // Not a v4 file. If a v2 file happens to sit here, do not pretend
+            // the password was wrong; the caller needs to know the format
+            // differs so it can offer an import instead.
+            throw new CryptoException("unsupported vault format");
         }
-        int iters = VaultMigrator.getIterations(prefs);
-        byte[] key;
-        try {
-            key = KeyDerivation.deriveKey(masterPassword, salt, iters);
-        } catch (GeneralSecurityException e) {
-            return "\u5bc6\u94a5\u6d3e\u751f\u5931\u8d25\uff1a" + e.getMessage();
-        }
-        if (!VaultMigrator.verifyKey(prefs, key)) {
+        byte[] key = KeyDerivation.derive(masterPassword, header.salt, header.iterations);
+        List<Entry> entries = VaultCrypto.open(raw, key);
+        if (entries == null) {
             KeyDerivation.wipe(key);
-            return "\u4e3b\u5bc6\u7801\u9519\u8bef";
+            return false;
         }
         KeyDerivation.wipe(sKey);
         sKey = key;
-        return null;
+        sEntries = entries;
+        return true;
+    }
+
+    /** All entries. Empty when locked. */
+    public static synchronized List<Entry> entries() {
+        if (sEntries == null) {
+            return new ArrayList<Entry>();
+        }
+        return new ArrayList<Entry>(sEntries);
+    }
+
+    public static synchronized int size() {
+        return sEntries == null ? 0 : sEntries.size();
+    }
+
+    /** Replace the whole vault and persist it. */
+    public static synchronized void replaceAll(Context context, List<Entry> entries)
+            throws CryptoException, IOException, GeneralSecurityException {
+        requireUnlocked();
+        String raw = readText(file(context));
+        VaultCrypto.Header header = VaultCrypto.readHeader(raw);
+        if (header == null) {
+            throw new CryptoException("vault header unreadable");
+        }
+        write(context, entries, sKey, header.salt, header.iterations);
+        sEntries = new ArrayList<Entry>(entries);
+    }
+
+    public static synchronized void add(Context context, Entry entry)
+            throws CryptoException, IOException, GeneralSecurityException {
+        List<Entry> list = entries();
+        list.add(entry);
+        replaceAll(context, list);
     }
 
     /**
-     * \u8fc1\u79fb\u65e7\u6570\u636e\u5230\u65b0\u683c\u5f0f\u3002
-     * \u4e8b\u52a1\u5f0f\uff1a\u4efb\u4f55\u4e00\u6b65\u5931\u8d25\u90fd\u4e0d\u5199\u5165\uff0c\u65e7\u6570\u636e\u4fdd\u6301\u539f\u6837\u3002
+     * Write entries atomically: serialize to a temp file, then rename.
+     * A crash mid-write therefore cannot destroy the existing vault.
      */
-    public static synchronized String migrate(SharedPreferences prefs, char[] masterPassword,
-                                              String coreWord, String customSalt) {
-        // 1. \u5168\u91cf\u89e3\u5bc6\u65e7\u6570\u636e
-        VaultMigrator.Result dec = VaultMigrator.decryptLegacyToMemory(prefs);
-        if (dec.error != null) {
-            return "\u65e7\u6570\u636e\u89e3\u5bc6\u5931\u8d25\uff0c\u5df2\u4e2d\u6b62\u8fc1\u79fb\uff08\u65e7\u6570\u636e\u672a\u52a8\uff09\uff1a" + dec.error;
+    private static void write(Context context, List<Entry> entries, byte[] key,
+                              byte[] salt, int iterations)
+            throws CryptoException, IOException {
+        File target = file(context);
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            parent.mkdirs();
         }
-        // 2. \u6d3e\u751f\u65b0\u5bc6\u94a5
-        byte[] salt = KeyDerivation.newSalt();
-        int iters = KeyDerivation.calibrate(masterPassword, salt, 300);
-        byte[] key;
+        String sealed = VaultCrypto.seal(entries, key, salt, iterations);
+        File temp = new File(target.getAbsolutePath() + ".tmp");
+        FileOutputStream out = new FileOutputStream(temp);
         try {
-            key = KeyDerivation.deriveKey(masterPassword, salt, iters);
-        } catch (GeneralSecurityException e) {
-            return "\u65b0\u5bc6\u94a5\u6d3e\u751f\u5931\u8d25\uff1a" + e.getMessage();
+            OutputStreamWriter writer = new OutputStreamWriter(out, UTF8);
+            writer.write(sealed);
+            writer.flush();
+            out.getFD().sync();
+        } finally {
+            out.close();
         }
-        // 3. \u4e8b\u52a1\u5f0f\u63d0\u4ea4
-        VaultMigrator.Result w = VaultMigrator.commitMigration(
-                prefs, dec.plainLines, key, salt, iters, coreWord, customSalt);
-        if (!w.migrated) {
+        if (target.exists() && !target.delete()) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            throw new IOException("could not replace existing vault");
+        }
+        if (!temp.renameTo(target)) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            throw new IOException("could not move vault into place");
+        }
+    }
+
+    /** Export the sealed vault text so it can be backed up or shared. */
+    public static synchronized String exportSealed(Context context) throws IOException {
+        return readText(file(context));
+    }
+
+    /** Import a sealed vault, replacing the current one. */
+    public static synchronized int importSealed(Context context, String raw, char[] masterPassword)
+            throws CryptoException, GeneralSecurityException, IOException {
+        VaultCrypto.Header header = VaultCrypto.readHeader(raw);
+        if (header == null) {
+            throw new CryptoException("not a v4 vault");
+        }
+        byte[] key = KeyDerivation.derive(masterPassword, header.salt, header.iterations);
+        List<Entry> entries = VaultCrypto.open(raw, key);
+        if (entries == null) {
             KeyDerivation.wipe(key);
-            return "\u8fc1\u79fb\u5199\u5165\u5931\u8d25\uff1a" + w.error;
+            throw new CryptoException("wrong password for this backup");
         }
+        writeRaw(context, raw);
         KeyDerivation.wipe(sKey);
         sKey = key;
-        return null;
+        sEntries = entries;
+        rememberIterations(context, header.iterations);
+        return entries.size();
     }
 
-    /** \u52a0\u5bc6\u4e00\u884c\u8bb0\u5f55\uff08\u672a\u89e3\u9501\u629b\u5f02\u5e38\uff09 */
-    public static String encryptLine(String plain) throws CryptoHelper.CryptoException {
-        byte[] k = sKey;
-        if (k == null) {
-            throw new CryptoHelper.CryptoException("\u71b5\u5e93\u672a\u89e3\u9501");
+    private static void writeRaw(Context context, String raw) throws IOException {
+        File target = file(context);
+        File temp = new File(target.getAbsolutePath() + ".tmp");
+        FileOutputStream out = new FileOutputStream(temp);
+        try {
+            OutputStreamWriter writer = new OutputStreamWriter(out, UTF8);
+            writer.write(raw);
+            writer.flush();
+            out.getFD().sync();
+        } finally {
+            out.close();
         }
-        return CryptoHelper.encrypt(plain, k);
-    }
-
-    /** \u89e3\u5bc6\u4e00\u884c\u8bb0\u5f55\uff08\u5931\u8d25\u629b\u5f02\u5e38\uff0c\u4e0d\u964d\u7ea7\uff09 */
-    public static String decryptLine(String b64) throws CryptoHelper.CryptoException {
-        byte[] k = sKey;
-        if (k == null) {
-            throw new CryptoHelper.CryptoException("\u71b5\u5e93\u672a\u89e3\u9501");
+        if (target.exists() && !target.delete()) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            throw new IOException("could not replace existing vault");
         }
-        return CryptoHelper.decrypt(b64, k);
+        if (!temp.renameTo(target)) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            throw new IOException("could not move vault into place");
+        }
     }
 
-    /** \u5b89\u5168\u5730\u8bfb\u53d6\u6838\u5fc3\u8bcd\uff08Keystore \u52a0\u5bc6\u5b58\u50a8\uff09 */
-    public static String getCoreWord(SharedPreferences prefs) {
-        return SecureStore.getString(prefs, VaultMigrator.KEY_CORE_WORD);
+    private static void requireUnlocked() throws CryptoException {
+        if (sKey == null) {
+            throw new CryptoException("vault is locked");
+        }
     }
 
-    public static boolean putCoreWord(SharedPreferences prefs, String coreWord) {
-        return SecureStore.putString(prefs, VaultMigrator.KEY_CORE_WORD, coreWord);
+    private static String readText(File f) throws IOException {
+        if (!f.exists()) {
+            return "";
+        }
+        FileInputStream in = new FileInputStream(f);
+        try {
+            InputStreamReader reader = new InputStreamReader(in, UTF8);
+            StringBuilder sb = new StringBuilder((int) Math.max(64, f.length()));
+            char[] buf = new char[4096];
+            int read;
+            while ((read = reader.read(buf)) > 0) {
+                sb.append(buf, 0, read);
+            }
+            return sb.toString();
+        } finally {
+            in.close();
+        }
     }
 
-    public static String getCustomSalt(SharedPreferences prefs) {
-        return SecureStore.getString(prefs, VaultMigrator.KEY_CUSTOM_SALT);
+    private static void rememberIterations(Context context, int iterations) {
+        SharedPreferences prefs = context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        prefs.edit().putInt(PREF_ITERATIONS, iterations).apply();
     }
 
-    public static boolean putCustomSalt(SharedPreferences prefs, String salt) {
-        return SecureStore.putString(prefs, VaultMigrator.KEY_CUSTOM_SALT, salt);
+    public static int lastIterations(Context context) {
+        return context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                .getInt(PREF_ITERATIONS, KeyDerivation.ITERATIONS_DEFAULT);
     }
 }

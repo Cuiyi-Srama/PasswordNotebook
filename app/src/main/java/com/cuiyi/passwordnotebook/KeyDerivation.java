@@ -7,34 +7,49 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 
 /**
- * \u5bc6\u94a5\u6d3e\u751f\u6a21\u5757 v3.0
+ * Key derivation for the vault. v4.
+ *
+ * Design: the master password is the only secret.
+ * - PBKDF2-HMAC-SHA256
+ * - per-vault random 16 byte salt (stored in the clear, that is fine)
+ * - iteration count calibrated on the device, and persisted in the vault header
+ * - derived bytes are wiped after use
+ *
+ * The previous release shipped a hardcoded AES key inside the dex, which meant
+ * that decompiling the APK was enough to decrypt every vault. Nothing here
+ * relies on a constant.
  */
 public final class KeyDerivation {
 
     public static final int SALT_BYTES = 16;
-    public static final int KEY_BITS = 256;
+    public static final int KEY_BYTES = 32;
+
+    /** Lower bound we refuse to go below. OWASP suggests 600000 for SHA256. */
+    public static final int ITERATIONS_FLOOR = 210000;
+    /** Default when calibration is not run. */
     public static final int ITERATIONS_DEFAULT = 600000;
-    public static final int ITERATIONS_MIN = 210000;
+    /** Upper bound so a slow device does not lock the user out for seconds. */
+    public static final int ITERATIONS_CEILING = 2000000;
 
     private KeyDerivation() {
         throw new AssertionError("no instance");
     }
 
-    public static byte[] deriveKey(char[] masterPassword, byte[] salt, int iterations)
+    public static byte[] derive(char[] password, byte[] salt, int iterations)
             throws GeneralSecurityException {
-        if (masterPassword == null || masterPassword.length == 0) {
-            throw new IllegalArgumentException("master password must not be empty");
+        if (password == null || password.length == 0) {
+            throw new IllegalArgumentException("password must not be empty");
         }
         if (salt == null || salt.length < 8) {
             throw new IllegalArgumentException("salt must be at least 8 bytes");
         }
-        if (iterations < ITERATIONS_MIN) {
-            throw new IllegalArgumentException("iterations too low: " + iterations);
+        if (iterations < ITERATIONS_FLOOR) {
+            throw new IllegalArgumentException("iteration count too low: " + iterations);
         }
-        PBEKeySpec spec = new PBEKeySpec(masterPassword, salt, iterations, KEY_BITS);
+        PBEKeySpec spec = new PBEKeySpec(password, salt, iterations, KEY_BYTES * 8);
         try {
-            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
-            return f.generateSecret(spec).getEncoded();
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                    .generateSecret(spec).getEncoded();
         } finally {
             spec.clearPassword();
         }
@@ -46,25 +61,29 @@ public final class KeyDerivation {
         return salt;
     }
 
+    /**
+     * Pick an iteration count that keeps derivation near targetMillis on this
+     * device. Result is clamped to [ITERATIONS_FLOOR, ITERATIONS_CEILING].
+     */
     public static int calibrate(char[] password, byte[] salt, long targetMillis) {
-        int iters = ITERATIONS_MIN;
-        final int maxIters = 2000000;
+        int iterations = ITERATIONS_FLOOR;
         try {
-            while (iters < maxIters) {
-                long t0 = System.nanoTime();
-                deriveKey(password, salt, iters);
-                long elapsed = (System.nanoTime() - t0) / 1000000L;
+            while (iterations < ITERATIONS_CEILING) {
+                long start = System.nanoTime();
+                derive(password, salt, iterations);
+                long elapsed = (System.nanoTime() - start) / 1000000L;
                 if (elapsed >= targetMillis) {
                     break;
                 }
-                iters = (int) Math.min((long) iters * 2L, maxIters);
+                iterations = (int) Math.min((long) iterations * 2L, ITERATIONS_CEILING);
             }
         } catch (GeneralSecurityException e) {
             return ITERATIONS_DEFAULT;
         }
-        return Math.max(ITERATIONS_MIN, Math.min(iters, maxIters));
+        return Math.max(ITERATIONS_FLOOR, Math.min(iterations, ITERATIONS_CEILING));
     }
 
+    /** Overwrite sensitive bytes. Best effort on the JVM, still worth doing. */
     public static void wipe(byte[] data) {
         if (data != null) {
             Arrays.fill(data, (byte) 0);
