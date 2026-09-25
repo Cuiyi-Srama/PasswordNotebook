@@ -119,6 +119,58 @@ public final class Vault {
         return true;
     }
 
+    // ---------------- biometric ----------------
+
+    /**
+     * Open the vault with a key that was already derived, instead of a password.
+     *
+     * Used by the biometric path, where the key comes back from the Keystore
+     * wrapper rather than from PBKDF2. The candidate is still checked against
+     * the file token, so a stale wrapper is rejected cleanly instead of
+     * producing a vault full of garbage.
+     *
+     * @return true when this key opens the vault
+     */
+    public static synchronized boolean unlockWithKey(Context context, byte[] candidate)
+            throws CryptoException, IOException {
+        if (candidate == null || candidate.length != KeyDerivation.KEY_BYTES) {
+            return false;
+        }
+        String text = VaultFile.read(file(context));
+        VaultFile.Header header = VaultFile.readHeader(text);
+        if (header == null) {
+            throw new CryptoException("unrecognised vault format");
+        }
+        String probe;
+        try {
+            probe = SecretCipher.decrypt(header.check, candidate);
+        } catch (CryptoException e) {
+            return false;
+        }
+        if (!VERIFY_TOKEN.equals(probe)) {
+            return false;
+        }
+        String body = VaultFile.readBody(text);
+        if (body == null || body.isEmpty()) {
+            throw new CryptoException("vault body is missing");
+        }
+        String json = SecretCipher.decrypt(body, candidate);
+        List<Entry> loaded = VaultJson.read(json);
+        // Keep our own copy so the caller's array can be wiped immediately.
+        byte[] owned = new byte[candidate.length];
+        System.arraycopy(candidate, 0, owned, 0, candidate.length);
+        adopt(owned, loaded);
+        return true;
+    }
+
+    /**
+     * The live key, so it can be wrapped for biometric unlock.
+     * Returns null while locked. Callers must not retain the array.
+     */
+    public static synchronized byte[] currentKey() {
+        return key;
+    }
+
     // ---------------- read ----------------
 
     /** A copy of the current entries; empty while locked. */

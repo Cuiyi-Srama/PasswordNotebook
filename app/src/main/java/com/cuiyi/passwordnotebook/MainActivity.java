@@ -30,13 +30,17 @@ import android.widget.TextView;
 import android.widget.Toast;
 import com.cuiyi.passwordnotebook.data.Entry;
 import com.cuiyi.passwordnotebook.data.LegacyReader;
+import com.cuiyi.passwordnotebook.crypto.BiometricKeyStore;
 import com.cuiyi.passwordnotebook.data.Vault;
 import com.cuiyi.passwordnotebook.gen.PasswordFactory;
 import com.cuiyi.passwordnotebook.ui.Animations;
+import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory;
+import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory.BiometricPrompt;
 import com.cuiyi.passwordnotebook.ui.CyberRainView;
 import com.cuiyi.passwordnotebook.ui.FilePicker;
 import com.cuiyi.passwordnotebook.ui.Theme;
 import java.io.File;
+import javax.crypto.Cipher;
 import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
@@ -124,8 +128,23 @@ public class MainActivity extends Activity {
         if (rain != null) {
             rain.pause();
         }
-        // Do not keep the key in memory while we are not in front.
-        Vault.lock();
+    }
+
+    /**
+     * Lock only when the activity is genuinely going away.
+     *
+     * Locking in onPause looked safer but broke the app: showing a dialog can
+     * pause the activity, so the key was wiped the instant the unlock prompt
+     * appeared and the user could never get back in. onStop still covers the
+     * cases that matter (home, recents, screen off) without tripping on our own
+     * dialogs.
+     */
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (!isChangingConfigurations()) {
+            Vault.lock();
+        }
     }
 
     @Override
@@ -157,6 +176,15 @@ public class MainActivity extends Activity {
 
         rain = new CyberRainView(this);
         root.addView(rain, new FrameLayout.LayoutParams(-1, -1));
+
+        // Scrim between the rain and the interface. Without this the glyphs sit
+        // directly behind the text and make it unreadable, which reads as the
+        // screen being broken rather than as a background.
+        View scrim = new View(this);
+        scrim.setBackgroundColor(Theme.SCRIM);
+        scrim.setClickable(false);
+        scrim.setFocusable(false);
+        root.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
@@ -210,7 +238,20 @@ public class MainActivity extends Activity {
         }
         contentArea.removeAllViews();
         if (!Vault.isUnlocked()) {
-            contentArea.addView(hint("已锁定，请重新输入主密码"));
+            // Reached when the vault was locked while the activity stayed
+            // visible. Offer the way back in rather than a dead-end message.
+            contentArea.addView(hint(Vault.exists(this)
+                    ? "已锁定。输入主密码继续，或使用指纹解锁。"
+                    : "还没有创建密码库。"));
+            contentArea.addView(space(10));
+            contentArea.addView(fullButton("解锁", Theme.TEXT_ACCENT,
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            Animations.pressFeedback(v);
+                            gate();
+                        }
+                    }));
             return;
         }
         if (index == 0) {
@@ -281,54 +322,166 @@ public class MainActivity extends Activity {
         LinearLayout box = column();
         box.addView(input);
 
-        new AlertDialog.Builder(this)
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle("解锁")
                 .setCancelable(false)
                 .setView(box)
                 .setPositiveButton("解锁", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        attemptUnlock(input.getText().toString());
+                        attemptUnlock(input.getText().toString(), true);
                     }
-                })
-                .setNeutralButton("恢复备份", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        askRestoreBackup();
-                    }
-                })
-                .show();
+                });
+
+        // Offer the biometric route only when the user has enrolled it, so the
+        // dialog does not promise something that would immediately fail.
+        if (BiometricKeyStore.isSupported() && BiometricKeyStore.hasWrappedKey(this)) {
+            builder.setNeutralButton("指纹解锁", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface dialog, int which) {
+                    unlockWithBiometric();
+                }
+            });
+        } else {
+            builder.setNeutralButton("恢复备份", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface dialog, int which) {
+                    askRestoreBackup();
+                }
+            });
+        }
+        builder.show();
     }
 
-    private void attemptUnlock(final String password) {
-        // If the user turned on device verification, confirm it before touching
-        // the vault. This is a convenience gate, not a key: the master password
-        // is still what actually decrypts.
-        if (prefs.getBoolean(KEY_DEVICE_GATE, false)) {
-            KeyguardManager keyguard = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
-            if (keyguard != null && keyguard.isKeyguardSecure()) {
-                Intent confirm = keyguard.createConfirmDeviceCredentialIntent(
-                        "验证身份", "请验证系统锁屏以继续");
-                if (confirm != null) {
-                    startActivityForResult(confirm, REQUEST_DEVICE_CREDENTIAL);
-                }
-            }
-        }
+    private void attemptUnlock(final String password, boolean offerEnrolment) {
         char[] chars = password.toCharArray();
         try {
             boolean ok = Vault.unlock(this, chars);
             if (ok) {
                 toast("已解锁");
                 showTab(0);
+                if (offerEnrolment && BiometricKeyStore.isSupported()
+                        && !BiometricKeyStore.hasWrappedKey(this)) {
+                    offerBiometricEnrolment();
+                }
             } else {
                 toast("主密码错误");
                 askUnlock();
             }
         } catch (Exception e) {
             toast("无法读取数据库：" + e.getMessage());
-            showTab(0);
         } finally {
             com.cuiyi.passwordnotebook.crypto.KeyDerivation.wipe(chars);
+        }
+    }
+
+    // ---------------- biometric unlock ----------------
+
+    /**
+     * Ask the user whether to turn on fingerprint unlock.
+     *
+     * Offered right after a successful password unlock, which is the only
+     * moment the vault key is available to wrap.
+     */
+    private void offerBiometricEnrolment() {
+        new AlertDialog.Builder(this)
+                .setTitle("启用指纹解锁？")
+                .setMessage("开启后，打开应用可直接用指纹进入，不必每次输入主密码。\n\n"
+                        + "主密码仍然有效，也仍然用于导出和恢复备份。\n\n"
+                        + "代价：能通过你手机指纹的人就能打开这个密码库。")
+                .setPositiveButton("启用", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        enrolBiometric();
+                    }
+                })
+                .setNegativeButton("暂不", null)
+                .show();
+    }
+
+    private void enrolBiometric() {
+        try {
+            final Cipher cipher = BiometricKeyStore.cipherForEnrolment();
+            BiometricPrompt prompt = BiometricPromptFactory.create(this,
+                    "启用指纹解锁", "验证指纹以保存解锁凭据");
+            if (prompt == null) {
+                toast("此设备不支持指纹验证");
+                return;
+            }
+            prompt.authenticate(cipher, new BiometricPromptFactory.Callback() {
+                @Override
+                public void onSucceeded(Cipher authorised) {
+                    try {
+                        byte[] vaultKey = Vault.currentKey();
+                        if (vaultKey == null) {
+                            toast("解锁状态已失效，请重新输入主密码");
+                            return;
+                        }
+                        BiometricKeyStore.storeWrappedKey(MainActivity.this, vaultKey, authorised);
+                        toast("指纹解锁已启用");
+                    } catch (Exception e) {
+                        toast("保存失败：" + e.getMessage());
+                    }
+                }
+
+                @Override
+                public void onFailed(String reason) {
+                    toast(reason);
+                }
+            });
+        } catch (Exception e) {
+            toast("无法启用：" + e.getMessage());
+        }
+    }
+
+    private void unlockWithBiometric() {
+        try {
+            final Cipher cipher = BiometricKeyStore.cipherForUnlock(this);
+            BiometricPrompt prompt = BiometricPromptFactory.create(this,
+                    "指纹解锁", "验证指纹以打开密码库");
+            if (prompt == null) {
+                toast("此设备不支持指纹验证");
+                askUnlock();
+                return;
+            }
+            prompt.authenticate(cipher, new BiometricPromptFactory.Callback() {
+                @Override
+                public void onSucceeded(Cipher authorised) {
+                    byte[] recovered = BiometricKeyStore.recoverVaultKey(
+                            MainActivity.this, authorised);
+                    if (recovered == null) {
+                        toast("指纹凭据已失效，请用主密码解锁");
+                        askUnlock();
+                        return;
+                    }
+                    try {
+                        boolean ok = Vault.unlockWithKey(MainActivity.this, recovered);
+                        if (ok) {
+                            toast("已解锁");
+                            showTab(0);
+                        } else {
+                            BiometricKeyStore.clear(MainActivity.this);
+                            toast("指纹凭据与密码库不匹配，已清除");
+                            askUnlock();
+                        }
+                    } catch (Exception e) {
+                        toast("解锁失败：" + e.getMessage());
+                        askUnlock();
+                    } finally {
+                        com.cuiyi.passwordnotebook.crypto.KeyDerivation.wipe(recovered);
+                    }
+                }
+
+                @Override
+                public void onFailed(String reason) {
+                    toast(reason);
+                    askUnlock();
+                }
+            });
+        } catch (Exception e) {
+            toast("无法使用指纹：" + e.getMessage());
+            BiometricKeyStore.clear(this);
+            askUnlock();
         }
     }
 
@@ -902,6 +1055,8 @@ public class MainActivity extends Activity {
         root.addView(hint("系统验证只是进入前的一道门，真正解开数据库的仍然是你的主密码。"));
 
         root.addView(space(6));
+        root.addView(buildBiometricRow());
+        root.addView(space(6));
         root.addView(fullButton("立即锁定", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -964,6 +1119,41 @@ public class MainActivity extends Activity {
      * route reads the text itself so a 9 KB backup does not have to survive the
      * system clipboard.
      */
+    /** Fingerprint toggle for the settings tab. */
+    private View buildBiometricRow() {
+        LinearLayout row = row();
+        row.setBackground(glassCard());
+        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        TextView label = new TextView(this);
+        label.setText(BiometricKeyStore.isSupported()
+                ? "指纹解锁" : "指纹解锁（此设备不支持）");
+        label.setTextColor(Theme.TEXT_PRIMARY);
+        label.setTextSize(Theme.SIZE_BODY);
+        label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(label);
+
+        final Switch toggle = new Switch(this);
+        toggle.setEnabled(BiometricKeyStore.isSupported());
+        toggle.setChecked(BiometricKeyStore.hasWrappedKey(this));
+        toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton button, boolean checked) {
+                if (!BiometricKeyStore.isSupported()) {
+                    return;
+                }
+                if (checked) {
+                    enrolBiometric();
+                } else {
+                    BiometricKeyStore.clear(MainActivity.this);
+                    toast("指纹解锁已关闭");
+                }
+            }
+        });
+        row.addView(toggle);
+        return row;
+    }
+
     private void askImportLegacy() {
         new AlertDialog.Builder(this)
                 .setTitle("导入旧版数据")

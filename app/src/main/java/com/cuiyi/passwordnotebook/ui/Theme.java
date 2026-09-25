@@ -23,6 +23,17 @@ public final class Theme {
     /** Horizontal scanline colour, low alpha. */
     public static final int SCANLINE = 0x1100FF88;
 
+    /**
+     * Scrim drawn between the rain and the interface.
+     *
+     * The rain is deliberately high contrast, which makes it unreadable as a
+     * backdrop for text. This layer sits on top of it and pulls the contrast
+     * down without hiding the animation entirely.
+     */
+    public static final int SCRIM = 0xD904070C;
+    /** Extra scrim under dense areas such as list rows. */
+    public static final int SCRIM_STRONG = 0xE604070C;
+
     // ---- cyber rain palette ----
 
     /** Leading glyph. Bright mint green. */
