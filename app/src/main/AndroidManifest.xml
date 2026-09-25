@@ -3,27 +3,35 @@
     package="com.cuiyi.passwordnotebook">
 
     <!--
-        Reading and writing the user's own backup files in /sdcard/Download.
-        On API 29+ the legacy flag keeps this working without asking the user
-        to pick a folder; on API 33+ READ_EXTERNAL_STORAGE is replaced by the
-        granular media permissions, but a plain text file is still readable via
-        the legacy path below. Nothing else in the app touches the filesystem.
+        Declared explicitly because the build script also passes  - target-sdk-version:
+        two sources for the same value invite drift, and Play rejects a mismatch.
+        Target 36 (Android 16) so the app is accepted on current devices; minSdk 24
+        keeps Android 7.0 working.
+    -->
+    <uses-sdk
+        android:minSdkVersion="24"
+        android:targetSdkVersion="36" />
+
+    <!--
+        Biometric prompt for the fingerprint unlock. USE_FINGERPRINT is listed
+        alongside USE_BIOMETRIC only for devices older than API 28; it is a no-op
+        on modern versions.
     -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.USE_FINGERPRINT" />
 
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!--
+        No storage permissions are declared on purpose. Backups are read through
+        the Storage Access Framework, which grants access to the single file the
+        user picks and to nothing else, so the app never needs broad filesystem
+        access. Requesting WRITE_EXTERNAL_STORAGE here would hand the app far more
+        reach than it uses and show the user a scary permission prompt.
+    -->
 
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
-        android:requestLegacyExternalStorage="true"
         android:theme="@style/AppTheme">
 
         <activity
