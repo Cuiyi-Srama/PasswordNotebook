@@ -12,6 +12,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -24,18 +29,12 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Restore signing keystore
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
-
       - name: Build
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -f release.keystore ]; then
+          if [ -n "$KEYSTORE_B64" ]; then
             echo "Signing secrets found: building a signed release APK."
+            printf '%s' "$KEYSTORE_B64" | base64 -d > release.keystore
+            ls -la release.keystore
             gradle :app:assembleRelease --no-daemon --stacktrace
           else
             echo "No signing secrets: falling back to a debug APK."
@@ -57,11 +56,14 @@ jobs:
           sha256sum "$OUT" | tee SHA256SUMS.txt
           ls -la "$OUT"
 
-      - name: Verify signature
+      - name: Report signature
         run: |
           APK=$(ls PasswordNotebook-*.apk | head -1)
-          if [ -f release.keystore ]; then
-            $ANDROID_HOME/build-tools/*/apksigner verify --print-certs "$APK" || true
+          SIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | head -1)
+          if [ -n "$SIGNER" ]; then
+            "$SIGNER" verify --print-certs "$APK" 2>&1 | head -20 || true
+          else
+            echo "apksigner not found, skipping"
           fi
 
       - uses: actions/upload-artifact@v4
