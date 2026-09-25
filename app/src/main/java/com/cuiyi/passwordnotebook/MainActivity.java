@@ -83,6 +83,9 @@ public class MainActivity extends Activity {
     /** Blank layer shown over everything while the app is backgrounded. */
     private View privacyShield;
     private long backgroundedAt;
+    /** Pending lock for the end of the grace window, or null. */
+    private Runnable graceExpiry;
+    private final android.os.Handler mainHandler = new android.os.Handler();
     private LinearLayout contentArea;
     private TextView[] tabViews;
     private int activeTab;
@@ -150,6 +153,7 @@ public class MainActivity extends Activity {
         if (!isChangingConfigurations()) {
             backgroundedAt = System.currentTimeMillis();
             showPrivacyShield();
+            scheduleGraceExpiry();
         }
     }
 
@@ -160,6 +164,7 @@ public class MainActivity extends Activity {
             rain.resume();
         }
         if (privacyShield != null && privacyShield.getVisibility() == View.VISIBLE) {
+            cancelGraceExpiry();
             maybeDropShield();
         }
     }
@@ -167,7 +172,15 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
-        if (!isChangingConfigurations()) {
+        if (isChangingConfigurations()) {
+            return;
+        }
+        // Locking here unconditionally made the grace period dead code: onStop
+        // fires as soon as the app leaves the foreground, so the key was gone
+        // before onResume could ever decide the gap was short enough. The key
+        // is kept only while the grace period is enabled, and onResume still
+        // locks once the window has passed.
+        if (!prefs.getBoolean(KEY_BG_GRACE, false)) {
             Vault.lock();
         }
     }
@@ -181,22 +194,50 @@ public class MainActivity extends Activity {
      * from leaking everything.
      */
     private void maybeDropShield() {
-        boolean vaultOpen = Vault.isUnlocked();
-        if (!vaultOpen) {
-            // onStop already locked the vault, so there is nothing to reveal.
-            hidePrivacyShield();
-            gate();
-            return;
-        }
-        boolean graceEnabled = prefs.getBoolean(KEY_BG_GRACE, false);
         long away = System.currentTimeMillis() - backgroundedAt;
-        if (graceEnabled && away < BG_GRACE_MS) {
+        boolean graceEnabled = prefs.getBoolean(KEY_BG_GRACE, false);
+
+        if (graceEnabled && away < BG_GRACE_MS && Vault.isUnlocked()) {
+            // Short trip away and the key is still in memory: just uncover.
             hidePrivacyShield();
             return;
         }
+
         hidePrivacyShield();
         Vault.lock();
         gate();
+    }
+
+    /**
+     * Locks the vault when the grace period runs out.
+     *
+     * onResume covers the normal case, but if the user never comes back the key
+     * would otherwise sit in memory indefinitely. This posts a lock for the end
+     * of the window; the runnable is removed whenever the app resumes in time.
+     */
+    private void scheduleGraceExpiry() {
+        if (graceExpiry != null) {
+            mainHandler.removeCallbacks(graceExpiry);
+            graceExpiry = null;
+        }
+        if (!prefs.getBoolean(KEY_BG_GRACE, false)) {
+            return;
+        }
+        graceExpiry = new Runnable() {
+            @Override
+            public void run() {
+                graceExpiry = null;
+                Vault.lock();
+            }
+        };
+        mainHandler.postDelayed(graceExpiry, BG_GRACE_MS);
+    }
+
+    private void cancelGraceExpiry() {
+        if (graceExpiry != null) {
+            mainHandler.removeCallbacks(graceExpiry);
+            graceExpiry = null;
+        }
     }
 
     private void showPrivacyShield() {

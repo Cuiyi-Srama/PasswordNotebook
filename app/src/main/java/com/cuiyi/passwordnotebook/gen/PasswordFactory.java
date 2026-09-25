@@ -31,8 +31,16 @@ public final class PasswordFactory {
     public static final String SPECIAL_COMMON = "!@#$%^&*-_=+.";
     public static final String SPECIAL_EXTENDED = "<>[]{}()/";
 
-    /** Rounds for the periodic derivation. Deliberately below the unlock cost. */
-    private static final int PERIODIC_ITERATIONS = 200_000;
+    /**
+     * Rounds for the periodic derivation.
+     *
+     * A core word is usually shorter and more predictable than a master
+     * password, so this is where a weak input is most likely. It is set at the
+     * vault floor rather than below it: the previous 200 000 was both weaker
+     * and, more visibly, below KeyDerivation.ITERATIONS_FLOOR, which made every
+     * attempt in this mode fail with "iteration count below floor".
+     */
+    private static final int PERIODIC_ITERATIONS = 600_000;
     private static final int SITE_SALT_BYTES = 16;
 
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -132,7 +140,8 @@ public final class PasswordFactory {
         char[] secret = material.toString().toCharArray();
         byte[] derived;
         try {
-            derived = KeyDerivation.derive(secret, siteSalt, PERIODIC_ITERATIONS);
+            derived = KeyDerivation.deriveForPurpose(secret, siteSalt,
+                    PERIODIC_ITERATIONS, "pwdnb-periodic");
         } finally {
             KeyDerivation.wipe(secret);
         }

@@ -25,6 +25,9 @@ public final class KeyDerivation {
      * are clamped here rather than silently weakened further.
      */
     public static final int ITERATIONS_FLOOR = 210_000;
+
+    /** Lowest count accepted by {@link #deriveForPurpose}, for non-vault uses. */
+    public static final int ITERATIONS_MIN_ANY = 10_000;
     public static final int ITERATIONS_DEFAULT = 600_000;
     public static final int ITERATIONS_CEILING = 2_000_000;
 
@@ -59,6 +62,52 @@ public final class KeyDerivation {
                     .getEncoded();
         } finally {
             spec.clearPassword();
+        }
+    }
+
+    /**
+     * Derive a key for something that is not the vault key.
+     *
+     * The vault floor exists because a low iteration count weakens the one
+     * secret guarding the whole file. A derived password is a different case:
+     * there is no stored ciphertext to attack, only an online target, so a
+     * lower cost is acceptable and keeps regeneration responsive. Callers must
+     * still pass a sane count; anything below 10 000 is rejected outright.
+     *
+     * @param purpose label mixed into the salt so keys for different uses can
+     *                never collide even with identical inputs
+     */
+    public static byte[] deriveForPurpose(char[] password, byte[] salt,
+                                          int iterations, String purpose)
+            throws GeneralSecurityException {
+        if (password == null || password.length == 0) {
+            throw new IllegalArgumentException("secret must not be empty");
+        }
+        if (salt == null || salt.length < 8) {
+            throw new IllegalArgumentException("salt must be at least 8 bytes");
+        }
+        if (iterations < ITERATIONS_MIN_ANY) {
+            throw new IllegalArgumentException(
+                    "iteration count too low: " + iterations + " (minimum "
+                            + ITERATIONS_MIN_ANY + ")");
+        }
+        // Fold the purpose and the salt into one salt so the same password and
+        // site cannot produce the same key for two different purposes.
+        byte[] purposeBytes = (purpose == null ? "" : purpose)
+                .getBytes(java.nio.charset.Charset.forName("UTF-8"));
+        byte[] combined = new byte[salt.length + 1 + purposeBytes.length];
+        System.arraycopy(salt, 0, combined, 0, salt.length);
+        combined[salt.length] = 0;
+        System.arraycopy(purposeBytes, 0, combined, salt.length + 1, purposeBytes.length);
+
+        PBEKeySpec spec = new PBEKeySpec(password, combined, iterations, KEY_BYTES * 8);
+        try {
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                    .generateSecret(spec)
+                    .getEncoded();
+        } finally {
+            spec.clearPassword();
+            Arrays.fill(combined, (byte) 0);
         }
     }
 
