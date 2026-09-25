@@ -123,6 +123,9 @@ public class MainActivity extends Activity {
     /** Line that explains the size of the currently enabled alphabet. */
     private TextView charsetHint;
 
+    /** Line that says which common cases the current length suits. */
+    private TextView lengthHint;
+
     private Switch switchUpper;
     private Switch switchLower;
     private Switch switchDigits;
@@ -150,6 +153,13 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         periodicRollEnabled = prefs.getBoolean(KEY_PERIOD_ROLL, false);
+        // The length was written to preferences on every drag but never read
+        // back, so a chosen length silently reverted to the default on the next
+        // launch. Clamped here as well because a value stored by an older build
+        // could sit outside the range the slider now offers.
+        passwordLength = Math.max(PasswordFactory.MIN_LENGTH,
+                Math.min(PasswordFactory.MAX_LENGTH,
+                        prefs.getInt(KEY_LENGTH, passwordLength)));
         searchDebouncer = new Animations.Debouncer();
         generateDebouncer = new Animations.Debouncer();
         buildShell();
@@ -795,14 +805,26 @@ public class MainActivity extends Activity {
         lengthRow.addView(lengthLabel);
         root.addView(lengthRow);
 
+        lengthHint = new TextView(this);
+        lengthHint.setTextColor(Theme.TEXT_MUTED);
+        lengthHint.setTextSize(Theme.SIZE_TINY);
+        lengthHint.setPadding(0, dp(4), 0, 0);
+        root.addView(lengthHint);
+        updateLengthHint();
+
         lengthSlider = new SeekBar(this);
-        lengthSlider.setMax(48);
-        lengthSlider.setProgress(Math.max(0, passwordLength - 8));
+        // The slider used to start at 8, so a six digit bank card or phone PIN
+        // could not be produced at all even though the generator itself had
+        // always accepted four. MIN_LENGTH now drives both ends, so the control
+        // and the factory can never disagree again.
+        lengthSlider.setMax(PasswordFactory.MAX_LENGTH - PasswordFactory.MIN_LENGTH);
+        lengthSlider.setProgress(passwordLength - PasswordFactory.MIN_LENGTH);
         lengthSlider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                passwordLength = progress + 8;
+                passwordLength = progress + PasswordFactory.MIN_LENGTH;
                 lengthLabel.setText(String.valueOf(passwordLength));
+                updateLengthHint();
                 if (fromUser) {
                     regenerate();
                 }
@@ -843,37 +865,19 @@ public class MainActivity extends Activity {
         LinearLayout box = column();
         box.addView(section("用哪些字符"));
 
-        LinearLayout presets = row();
-        presets.addView(weightedButton("纯数字", Theme.TEXT_SECONDARY, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Animations.pressFeedback(v);
-                applyCharsetPreset(false, false, true, false, false);
-            }
-        }));
-        presets.addView(weightedButton("纯字母", Theme.TEXT_SECONDARY, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Animations.pressFeedback(v);
-                applyCharsetPreset(true, true, false, false, false);
-            }
-        }));
-        presets.addView(weightedButton("字母+数字", Theme.TEXT_SECONDARY, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Animations.pressFeedback(v);
-                applyCharsetPreset(true, true, true, false, false);
-            }
-        }));
-        presets.addView(weightedButton("全部", Theme.TEXT_SECONDARY, new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Animations.pressFeedback(v);
-                applyCharsetPreset(true, true, true, true, true);
-            }
-        }));
-        box.addView(presets);
-        box.addView(space(6));
+        // Two by two rather than one row of four: the labels differ in width,
+        // so a single row left the buttons visibly misaligned and "字母+数字"
+        // wrapped onto two lines.
+        LinearLayout presetTop = row();
+        presetTop.addView(presetButton("纯数字   用于银行卡、PIN", false, false, true, false, false));
+        presetTop.addView(presetButton("纯字母   用于老式密码框", true, true, false, false, false));
+        box.addView(presetTop);
+
+        LinearLayout presetBottom = row();
+        presetBottom.addView(presetButton("字母+数字   通用", true, true, true, false, false));
+        presetBottom.addView(presetButton("全部字符   最安全", true, true, true, true, true));
+        box.addView(presetBottom);
+        box.addView(space(10));
 
         switchUpper = addSwitch(box, "大写 A-Z", KEY_GEN_UPPER, true);
         switchLower = addSwitch(box, "小写 a-z", KEY_GEN_LOWER, true);
@@ -890,6 +894,30 @@ public class MainActivity extends Activity {
         box.addView(charsetHint);
         updateCharsetHint();
         return box;
+    }
+
+    /**
+     * One preset tile.
+     *
+     * Fixed equal weight and a fixed two-line shape so all four sit on the same
+     * grid regardless of label length.
+     */
+    private TextView presetButton(String label, final boolean upper, final boolean lower,
+                                  final boolean digits, final boolean common,
+                                  final boolean extended) {
+        TextView view = button(label, Theme.TEXT_ACCENT);
+        view.setTextSize(Theme.SIZE_SMALL);
+        view.setGravity(Gravity.CENTER);
+        view.setLines(2);
+        view.setLayoutParams(new LinearLayout.LayoutParams(0, dp(52), 1f));
+        view.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                applyCharsetPreset(upper, lower, digits, common, extended);
+            }
+        });
+        return view;
     }
 
     /**
@@ -1022,15 +1050,11 @@ public class MainActivity extends Activity {
             charsetHint.setVisibility(View.VISIBLE);
         }
 
-        // The weekly rollover is a deliberate choice and the switch explains it
-        // on its own, so it moves into the collapsed area to keep the page calm.
+        // The weekly rollover sits last because it is a deliberate choice: the
+        // switch carries its own one-line explanation, and the icon spells out
+        // the consequence for anyone who wants it.
         box.addView(space(12));
-        box.addView(infoRow(
-                "需要密码每周自动变化？",
-                "开启后，同一个用途在这周和下周会得到不同密码。\n"
-                        + "适合公司 WiFi 这类定期换密码的场景，日常账号建议保持关闭。\n"
-                        + "关闭状态下一个用途永远对应同一个密码。",
-                buildPeriodToggle()));
+        box.addView(buildPeriodToggle());
         if (periodicRollEnabled) {
             box.addView(buildPeriodSelector());
         }
@@ -1050,11 +1074,19 @@ public class MainActivity extends Activity {
 
         LinearLayout labels = column();
         labels.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout titleRow = row();
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
         title.setText("密码每周自动变化");
         title.setTextColor(Theme.TEXT_PRIMARY);
         title.setTextSize(Theme.SIZE_BODY);
-        labels.addView(title);
+        titleRow.addView(title);
+        titleRow.addView(infoIcon("密码每周自动变化",
+                "开启后，同一个用途在这周和下周会得到不同密码。\n\n"
+                        + "适合公司 WiFi 这类需要定期换密码的场景。\n"
+                        + "日常账号建议保持关闭：关闭时一个用途永远对应同一个密码，"
+                        + "不会因为忘记哪一周而算不出来。"));
+        labels.addView(titleRow);
 
         TextView sub = new TextView(this);
         sub.setText("同一用途，这周与下周得到不同密码");
@@ -1095,45 +1127,68 @@ public class MainActivity extends Activity {
      *
      * @param extra optional control shown beneath the detail once expanded
      */
-    private View infoRow(String summary, String detail, View extra) {
-        LinearLayout box = column();
+    private View infoRow(String summary, String detail) {
+        LinearLayout box = row();
+        box.setGravity(Gravity.CENTER_VERTICAL);
 
-        final TextView header = new TextView(this);
-        // A chevron encodes collapsed state without spending a second line.
-        header.setText("ⓘ  " + summary);
-        header.setTextColor(Theme.TEXT_SECONDARY);
-        header.setTextSize(Theme.SIZE_SMALL);
-        header.setPadding(0, dp(2), 0, dp(2));
-        box.addView(header);
+        TextView text = new TextView(this);
+        text.setText(summary);
+        text.setTextColor(Theme.TEXT_MUTED);
+        text.setTextSize(Theme.SIZE_SMALL);
+        text.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        box.addView(text);
 
-        LinearLayout detailBox = column();
-        detailBox.setVisibility(View.GONE);
-        TextView detailText = new TextView(this);
-        detailText.setText(detail);
-        detailText.setTextColor(Theme.TEXT_MUTED);
-        detailText.setTextSize(Theme.SIZE_TINY);
-        detailText.setLineSpacing(0f, 1.35f);
-        detailText.setPadding(dp(14), dp(4), 0, dp(4));
-        detailBox.addView(detailText);
-        if (extra != null) {
-            detailBox.addView(extra);
-        }
-        box.addView(detailBox);
-
-        header.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Animations.pressFeedback(v);
-                boolean show = detailBox.getVisibility() != View.VISIBLE;
-                detailBox.setVisibility(show ? View.VISIBLE : View.GONE);
-                header.setText((show ? "ⓘ  " : "ⓘ  ") + summary);
-            }
-        });
+        // The whole line used to be the tap target and the detail unfolded in
+        // place, which pushed everything below it down and left a stale
+        // chevron behind. A small icon that opens a dialog keeps the layout
+        // still and costs one line instead of four.
+        box.addView(infoIcon(summary, detail));
         return box;
     }
 
-    private View infoRow(String summary, String detail) {
-        return infoRow(summary, detail, null);
+    private View infoIcon(final String summary, final String detail) {
+        TextView icon = new TextView(this);
+        icon.setText("ⓘ");
+        icon.setTextColor(Theme.TEXT_ACCENT);
+        icon.setTextSize(15f);
+        icon.setGravity(Gravity.CENTER);
+        icon.setPadding(dp(10), dp(4), dp(2), dp(4));
+        icon.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle(summary)
+                        .setMessage(detail)
+                        .setPositiveButton("知道了", null)
+                        .show();
+            }
+        });
+        return icon;
+    }
+
+    /**
+     * Explains what kind of password the current length suits.
+     *
+     * The generator used to hide its lower bound entirely: the slider simply
+     * started at eight with no hint that shorter values existed. Making the
+     * bound visible is only half of it; the other half is saying which common
+     * cases live at which length.
+     */
+    private void updateLengthHint() {
+        if (lengthHint == null) {
+            return;
+        }
+        if (passwordLength <= 6) {
+            lengthHint.setText("银行卡、手机锁屏等常用长度");
+            lengthHint.setTextColor(Theme.TEXT_SECONDARY);
+        } else if (passwordLength <= 10) {
+            lengthHint.setText("多数网站的常规长度");
+            lengthHint.setTextColor(Theme.TEXT_MUTED);
+        } else {
+            lengthHint.setText("较长，安全性更好");
+            lengthHint.setTextColor(Theme.TEXT_MUTED);
+        }
     }
 
     private View buildPeriodSelector() {
