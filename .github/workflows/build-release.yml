@@ -27,33 +27,24 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK components
-        run: |
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
-          yes | sdkmanager --licenses > /dev/null || true
-
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.5'
 
       - name: Build debug APK
-        run: |
-          gradle :app:assembleDebug --no-daemon --stacktrace
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Locate APK
         id: find_apk
         run: |
           APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
+          if [ -z "$APK" ]; then echo "No APK produced"; exit 1; fi
           echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-          echo "Found: $APK"
           ls -la "$APK"
 
-      - name: Rename artifact
-        id: rename
+      - name: Rename and checksum
+        id: pack
         run: |
           REF="${{ github.event.inputs.tag || github.ref_name }}"
           OUT="PasswordNotebook-${REF}.apk"
@@ -63,55 +54,53 @@ jobs:
           sha256sum "$OUT" | tee SHA256SUMS.txt
           ls -la "$OUT"
 
-      - name: Upload artifact
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: PasswordNotebook-APK
           path: |
-            ${{ steps.rename.outputs.out }}
+            ${{ steps.pack.outputs.out }}
             SHA256SUMS.txt
 
-      - name: Create Release
+      - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: PasswordNotebook ${{ github.event.inputs.tag || github.ref_name }}
           body: |
-            ## Security upgrade (v3.0)
-
-            This release fixes a fundamental flaw in the previous encryption design.
+            ## Security upgrade v3.0
 
             **Root cause:** the AES key was derived with a public constant used as BOTH
-            the PBKDF2 password and the salt, so the key could be recomputed offline by
-            anyone reading the APK. The 10,000 iterations provided no protection there,
-            because there was no user secret to guess.
+            the PBKDF2 password and the salt. The key was therefore recomputable offline
+            by anyone reading the APK, and the 10,000 iterations offered no protection
+            at all, because there was no user secret to guess in the first place.
 
-            **Fixes:**
-            - User master password now feeds PBKDF2-HMAC-SHA256 with a per-user random
-              16-byte salt and device-calibrated iteration count.
-            - Crypto layer is fail-closed: encryption/decryption failures raise instead
-              of silently falling back to plaintext or raw ciphertext.
-            - Core word and custom salt are encrypted at rest with a non-exportable
-              Android Keystore AES-GCM key.
+            **Fixes**
+            - A user master password now feeds PBKDF2-HMAC-SHA256 together with a
+              per-user random 16-byte salt and a device-calibrated iteration count.
+            - The crypto layer is fail-closed: failures raise instead of silently
+              falling back to plaintext or raw ciphertext.
+            - The core word and custom salt are encrypted at rest using a
+              non-exportable Android Keystore AES-GCM key.
             - Password derivation routes the core word through a KDF with a per-site
-              random salt instead of a bare SHA-256; random mode now uses rejection
+              random salt rather than a bare SHA-256. Random mode now uses rejection
               sampling to avoid modulo bias.
-            - Transactional migration for existing data: everything is decrypted to
-              memory first, any failure aborts, then a single atomic commit.
+            - Existing data migrates transactionally: everything is decrypted to
+              memory first, any failure aborts, then one atomic commit.
 
             **Also fixed:** two pre-existing compile errors that broke the build
-            (`LinearLayout.setRadius` and a non-final lambda capture).
+            (LinearLayout.setRadius and a non-final lambda capture), plus a CI
+            workflow, since the repository previously had none.
 
-            > Migration is one-way. Data stored under the old key should be treated as
-            > already disclosed, so rotate any password that was generated from the
-            > core word after migrating. Randomly generated passwords are unaffected
-            > by the key issue itself, but consider rotating high-value accounts as
-            > a precaution.
+            > Migration is one-way. Anything stored under the old key should be
+            > treated as already disclosed. Rotate passwords derived from the core
+            > word after migrating. Randomly generated passwords are not weakened by
+            > the key issue itself, but rotating high-value accounts is still wise.
 
-            See SHA256SUMS.txt for the checksum.
+            Verify the download against SHA256SUMS.txt.
           files: |
-            ${{ steps.rename.outputs.out }}
+            ${{ steps.pack.outputs.out }}
             SHA256SUMS.txt
           draft: false
           prerelease: false
