@@ -35,12 +35,14 @@ public final class PasswordFactory {
      * Rounds for the periodic derivation.
      *
      * A core word is usually shorter and more predictable than a master
-     * password, so this is where a weak input is most likely. It is set at the
-     * vault floor rather than below it: the previous 200 000 was both weaker
-     * and, more visibly, below KeyDerivation.ITERATIONS_FLOOR, which made every
-     * attempt in this mode fail with "iteration count below floor".
+     * password, so this is where a weak input is most likely and the count must
+     * stay meaningfully high. 350 000 keeps roughly a 3x margin over the vault
+     * floor while staying responsive on a mid-range phone: at 600 000 the wait
+     * was long enough to be felt even on a flagship, and the derivation runs on
+     * a worker thread now, so the cost shows up as a spinner rather than a
+     * freeze.
      */
-    private static final int PERIODIC_ITERATIONS = 600_000;
+    private static final int PERIODIC_ITERATIONS = 350_000;
     private static final int SITE_SALT_BYTES = 16;
 
     private static final SecureRandom RANDOM = new SecureRandom();

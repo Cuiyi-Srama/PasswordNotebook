@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
 
     private static final String PREFS = "pwd_nb_prefs";
     private static final String KEY_HIDE_ON_BG = "hide_on_bg";
+    private static final String KEY_PERIOD_ROLL = "period_roll";
     /** Grace period offered as an alternative to the default always-reask. */
     private static final String KEY_BG_GRACE = "bg_grace";
     private static final long BG_GRACE_MS = 30000L;
@@ -86,6 +87,16 @@ public class MainActivity extends Activity {
     /** Pending lock for the end of the grace window, or null. */
     private Runnable graceExpiry;
     private final android.os.Handler mainHandler = new android.os.Handler();
+
+    /** Single background thread for periodic derivation. */
+    private final java.util.concurrent.ExecutorService generateExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    /** Incremented per request so a late result cannot overwrite a newer one. */
+    private long generateRequest;
+    /** Animates the "生成中" label while a derivation is in flight. */
+    private Runnable generatingRunnable;
+    /** Coalesces keystrokes into one derivation. */
+    private Animations.Debouncer generateDebouncer;
     private LinearLayout contentArea;
     private TextView[] tabViews;
     private int activeTab;
@@ -114,6 +125,8 @@ public class MainActivity extends Activity {
     private int periodYear;
     private int periodWeek;
     private boolean periodicMode;
+    /** Whether the weekly rollover selector is shown at all. */
+    private boolean periodicRollEnabled;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -124,7 +137,9 @@ public class MainActivity extends Activity {
                 WindowManager.LayoutParams.FLAG_SECURE);
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        periodicRollEnabled = prefs.getBoolean(KEY_PERIOD_ROLL, false);
         searchDebouncer = new Animations.Debouncer();
+        generateDebouncer = new Animations.Debouncer();
         buildShell();
         gate();
     }
@@ -260,6 +275,11 @@ public class MainActivity extends Activity {
         if (rain != null) {
             rain.release();
         }
+        stopGeneratingIndicator();
+        if (generateDebouncer != null) {
+            generateDebouncer.cancel();
+        }
+        generateExecutor.shutdownNow();
     }
 
     @Override
@@ -668,8 +688,12 @@ public class MainActivity extends Activity {
     private void buildGeneratorTab() {
         LinearLayout root = column();
 
-        TextView modeButton = button(periodicMode ? "当前：核心词生成（点击切到随机）"
-                : "当前：随机生成（点击切到核心词）", Theme.TEXT_ACCENT);
+        // Name the two modes by what they give the user, not by how they work:
+        // "random" and "core word" are implementation words, while "可重建" is
+        // the property that actually decides which one to pick.
+        TextView modeButton = button(periodicMode
+                ? "模式：可重建密码　（点此改为完全随机）"
+                : "模式：完全随机　（点此改为可重建）", Theme.TEXT_ACCENT);
         modeButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -795,65 +819,171 @@ public class MainActivity extends Activity {
         return box;
     }
 
+    /**
+     * Controls for the recomputable mode.
+     *
+     * The two inputs answer different questions and the copy says so explicitly:
+     * the core word is the secret the user must keep, and the usage label is a
+     * public hint that makes each destination produce a different password. An
+     * earlier version called the second one “站点标识” with examples that all
+     * assumed websites, which read as if the two fields overlapped and left
+     * non-web uses like bank cards or device PINs without an obvious answer.
+     *
+     * The week selector is hidden until the user turns it on. Almost nobody
+     * wants a password that silently changes every Monday, and showing an
+     * unexplained “W39” by default only invited confusion.
+     */
     private View buildPeriodicControls() {
         LinearLayout box = column();
-        box.addView(section("核心词"));
-        box.addView(hint("核心词只存在你的记忆里。它一旦泄露，用这种方式生成的所有密码都会跟着泄露。"));
 
-        coreWordField = textInput("核心词");
+        box.addView(section("① 核心词"));
+        box.addView(hint("只有你知道的秘密。记住它，就能重新算出下面这些密码。"));
+        box.addView(hint("请勿填写你在其他任何地方用过的密码。"));
+
+        coreWordField = textInput("例如：一句只有你懂的话");
+        // Each keystroke would otherwise start a 350 000 round derivation. The
+        // debouncer waits for a pause in typing so only the settled value is
+        // derived, which is what keeps typing smooth.
         coreWordField.addTextChangedListener(new SimpleWatcher() {
             @Override
             public void onChanged() {
-                regenerate();
+                schedulePeriodicRegenerate();
             }
         });
         box.addView(coreWordField);
 
-        box.addView(space(8));
-        box.addView(section("站点标识（可选）"));
-        siteSaltField = textInput("例如域名或应用名，让不同站点得到不同密码");
+        box.addView(space(12));
+        box.addView(section("② 这是给谁用的"));
+        box.addView(hint("可以是网站、App、银行卡、门禁、设备……任何要用密码的地方。"));
+        box.addView(hint("这一项不必保密，但要在不同地方填不同的内容。"));
+
+        siteSaltField = textInput("例如：招商银行 / 淘宝 / iPhone 解锁");
         siteSaltField.addTextChangedListener(new SimpleWatcher() {
             @Override
             public void onChanged() {
-                regenerate();
+                schedulePeriodicRegenerate();
             }
         });
         box.addView(siteSaltField);
 
-        box.addView(space(8));
-        LinearLayout periodRow = row();
-        final TextView periodText = new TextView(this);
-        periodText.setText(periodYear + " W" + periodWeek);
-        periodText.setTextColor(Theme.TEXT_PRIMARY);
-        periodText.setGravity(Gravity.CENTER);
-        periodText.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView previous = button("◀", Theme.TEXT_ACCENT);
-        previous.setLayoutParams(new LinearLayout.LayoutParams(dp(48), -2));
+        box.addView(space(12));
+        box.addView(buildPeriodToggle());
+        if (periodicRollEnabled) {
+            box.addView(buildPeriodSelector());
+        }
+        return box;
+    }
+
+    /**
+     * Optional weekly rollover.
+     *
+     * Off by default and clearly labelled, because a password that changes on
+     * its own every week is a niche need and a silent source of lockouts.
+     */
+    private View buildPeriodToggle() {
+        LinearLayout row = row();
+        row.setBackground(glassCard());
+        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        LinearLayout labels = column();
+        labels.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView title = new TextView(this);
+        title.setText("密码每周自动变化");
+        title.setTextColor(Theme.TEXT_PRIMARY);
+        title.setTextSize(Theme.SIZE_BODY);
+        labels.addView(title);
+
+        TextView sub = new TextView(this);
+        sub.setText("同一用途，这周与下周得到不同密码");
+        sub.setTextColor(Theme.TEXT_MUTED);
+        sub.setTextSize(Theme.SIZE_TINY);
+        labels.addView(sub);
+        row.addView(labels);
+
+        final Switch toggle = new Switch(this);
+        toggle.setChecked(periodicRollEnabled);
+        toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton button, boolean checked) {
+                periodicRollEnabled = checked;
+                prefs.edit().putBoolean(KEY_PERIOD_ROLL, checked).apply();
+                // Rebuild so the selector appears or disappears with the switch.
+                showTab(0);
+            }
+        });
+        row.addView(toggle);
+        return row;
+    }
+
+    /**
+     * Week picker, shown only when rollover is on.
+     *
+     * The label spells out what the number means instead of printing a bare
+     * “W39”, and the buttons say what they do.
+     */
+    private View buildPeriodSelector() {
+        LinearLayout outer = column();
+        outer.setBackground(glassCard());
+        outer.setPadding(dp(12), dp(10), dp(12), dp(10));
+
+        final TextView caption = new TextView(this);
+        caption.setText(periodCaption());
+        caption.setTextColor(Theme.TEXT_PRIMARY);
+        caption.setTextSize(Theme.SIZE_BODY);
+        caption.setGravity(Gravity.CENTER);
+        outer.addView(caption);
+
+        LinearLayout buttons = row();
+        TextView previous = button("上一周", Theme.TEXT_ACCENT);
         previous.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Animations.pressFeedback(v);
                 shiftPeriod(-1);
-                periodText.setText(periodYear + " W" + periodWeek);
+                caption.setText(periodCaption());
                 regenerate();
             }
         });
-        final TextView next = button("▶", Theme.TEXT_ACCENT);
-        next.setLayoutParams(new LinearLayout.LayoutParams(dp(48), -2));
+        TextView reset = button("回到本周", Theme.TEXT_SECONDARY);
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                // 0/0 tells the factory to use the current period, so this also
+                // re-follows the week automatically from then on.
+                periodYear = 0;
+                periodWeek = 0;
+                caption.setText(periodCaption());
+                regenerate();
+            }
+        });
+        TextView next = button("下一周", Theme.TEXT_ACCENT);
         next.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Animations.pressFeedback(v);
                 shiftPeriod(1);
-                periodText.setText(periodYear + " W" + periodWeek);
+                caption.setText(periodCaption());
                 regenerate();
             }
         });
-        periodRow.addView(previous);
-        periodRow.addView(periodText);
-        periodRow.addView(next);
-        box.addView(periodRow);
-        return box;
+        buttons.addView(previous);
+        buttons.addView(reset);
+        buttons.addView(next);
+        outer.addView(buttons);
+        return outer;
+    }
+
+    /** Human readable form of the selected period. */
+    private String periodCaption() {
+        if (!periodicRollEnabled) {
+            return "";
+        }
+        if (periodYear == 0 && periodWeek == 0) {
+            int[] now = PasswordFactory.currentPeriod();
+            return "本周（" + now[0] + " 年第 " + now[1] + " 周）";
+        }
+        return periodYear + " 年第 " + periodWeek + " 周";
     }
 
     private void shiftPeriod(int delta) {
@@ -871,32 +1001,18 @@ public class MainActivity extends Activity {
         if (passwordView == null || typewriter == null) {
             return;
         }
+        if (periodicMode) {
+            regeneratePeriodicAsync();
+            return;
+        }
+        // Random is instant, so it stays on the main thread.
         String password;
         try {
-            if (periodicMode) {
-                String core = coreWordField == null ? "" : coreWordField.getText().toString();
-                String site = siteSaltField == null ? "" : siteSaltField.getText().toString();
-                if (core.trim().isEmpty()) {
-                    typewriter.finishWith("请输入核心词");
-                    strengthView.setText("");
-                    return;
-                }
-                byte[] salt = siteSalt(site);
-                int[] period = PasswordFactory.currentPeriod();
-                password = PasswordFactory.periodic(core, site, salt,
-                        periodYear == 0 ? period[0] : periodYear,
-                        periodWeek == 0 ? period[1] : periodWeek,
-                        passwordLength);
-            } else {
-                password = PasswordFactory.random(passwordLength,
-                        switchUpper.isChecked(), switchLower.isChecked(),
-                        switchDigits.isChecked(), switchCommon.isChecked(),
-                        switchExtended.isChecked());
-            }
+            password = PasswordFactory.random(passwordLength,
+                    switchUpper.isChecked(), switchLower.isChecked(),
+                    switchDigits.isChecked(), switchCommon.isChecked(),
+                    switchExtended.isChecked());
         } catch (IllegalArgumentException e) {
-            // Surface the factory's own message. It already distinguishes
-            // "no class enabled" from "length too short for the classes", and
-            // the periodic path raises its own validation errors through here.
             String message = e.getMessage();
             typewriter.finishWith(message == null || message.isEmpty()
                     ? "无法生成：参数不合法" : message);
@@ -907,6 +1023,90 @@ public class MainActivity extends Activity {
             strengthView.setText("");
             return;
         }
+        applyGeneratedPassword(password);
+    }
+
+    /**
+     * Runs the derivation once typing pauses.
+     *
+     * Only used by the text fields. Buttons and the slider call regenerate()
+     * directly because there the user has already committed to one action and a
+     * delay would just feel unresponsive.
+     */
+    private void schedulePeriodicRegenerate() {
+        generateDebouncer.submit(new Runnable() {
+            @Override
+            public void run() {
+                regenerate();
+            }
+        }, Theme.GENERATE_DEBOUNCE_MS);
+    }
+
+    /**
+     * Periodic derivation on a worker thread.
+     *
+     * PBKDF2 at 350 000 rounds costs a few hundred milliseconds, which is long
+     * enough to drop a visible amount of frames when run on the UI thread: the
+     * page froze mid-tap and the animation stuttered. The work now runs on a
+     * single background executor and the interface shows a counting hint in the
+     * meantime, so the wait is legible instead of looking like a hang.
+     *
+     * Results are tagged with a request id. Typing quickly during a slow
+     * derivation would otherwise let an older result land after a newer one and
+     * leave the wrong password on screen.
+     */
+    private void regeneratePeriodicAsync() {
+        final String core = coreWordField == null ? "" : coreWordField.getText().toString();
+        final String site = siteSaltField == null ? "" : siteSaltField.getText().toString();
+        if (core.trim().isEmpty()) {
+            typewriter.finishWith("请输入核心词");
+            strengthView.setText("");
+            return;
+        }
+        final int[] period = PasswordFactory.currentPeriod();
+        final int year = periodYear == 0 ? period[0] : periodYear;
+        final int week = periodWeek == 0 ? period[1] : periodWeek;
+        final int length = passwordLength;
+        final byte[] salt = siteSalt(site);
+        final long requestId = ++generateRequest;
+
+        showGeneratingIndicator();
+        generateExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                String result = null;
+                String error = null;
+                try {
+                    result = PasswordFactory.periodic(core, site, salt, year, week, length);
+                } catch (IllegalArgumentException e) {
+                    error = e.getMessage() == null ? "参数不合法" : e.getMessage();
+                } catch (Exception e) {
+                    error = "生成失败：" + e.getMessage();
+                }
+                final String finalResult = result;
+                final String finalError = error;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (requestId != generateRequest) {
+                            // A newer request superseded this one.
+                            return;
+                        }
+                        if (finalResult != null) {
+                            applyGeneratedPassword(finalResult);
+                        } else {
+                            typewriter.finishWith(finalError == null ? "生成失败" : finalError);
+                            strengthView.setText("");
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /** Paints a finished password and its strength rating. */
+    private void applyGeneratedPassword(String password) {
+        stopGeneratingIndicator();
         typewriter.type(password);
         fitPasswordText(password);
         int score = PasswordFactory.strength(password);
@@ -915,6 +1115,41 @@ public class MainActivity extends Activity {
             stars.append(i < score ? "★" : "☆");
         }
         strengthView.setText(stars.toString());
+    }
+
+    /**
+     * Placeholder shown while the derivation runs.
+     *
+     * A static label would read as a frozen app, so the dots advance on a timer
+     * and the existing typewriter pulse keeps the movement consistent with the
+     * rest of the interface.
+     */
+    private void showGeneratingIndicator() {
+        if (generatingRunnable != null) {
+            mainHandler.removeCallbacks(generatingRunnable);
+        }
+        generatingRunnable = new Runnable() {
+            private int dots;
+
+            @Override
+            public void run() {
+                StringBuilder text = new StringBuilder(Theme.GENERATING_LABEL);
+                for (int i = 0; i < dots; i++) {
+                    text.append('.');
+                }
+                typewriter.finishWith(text.toString());
+                dots = (dots + 1) % 4;
+                mainHandler.postDelayed(this, 220L);
+            }
+        };
+        mainHandler.post(generatingRunnable);
+    }
+
+    private void stopGeneratingIndicator() {
+        if (generatingRunnable != null) {
+            mainHandler.removeCallbacks(generatingRunnable);
+            generatingRunnable = null;
+        }
     }
 
     /**

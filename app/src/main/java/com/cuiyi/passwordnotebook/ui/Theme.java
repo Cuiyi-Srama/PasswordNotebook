@@ -130,6 +130,12 @@ public final class Theme {
     /** Debounce before running a search. */
     public static final long SEARCH_DEBOUNCE_MS = 220L;
 
+    /** Delay before a periodic derivation is started, per keystroke. */
+    public static final long GENERATE_DEBOUNCE_MS = 350L;
+
+    /** Shown while the periodic derivation runs off the main thread. */
+    public static final String GENERATING_LABEL = "生成中";
+
     public static int dp(android.content.Context ctx, float value) {
         return (int) (value * ctx.getResources().getDisplayMetrics().density + 0.5f);
     }
