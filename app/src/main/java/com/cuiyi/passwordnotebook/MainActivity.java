@@ -869,16 +869,17 @@ public class MainActivity extends Activity {
         // so a single row left the buttons visibly misaligned and "字母+数字"
         // wrapped onto two lines.
         LinearLayout presetTop = row();
-        presetTop.addView(presetButton("纯数字   用于银行卡、PIN", false, false, true, false, false));
-        presetTop.addView(presetButton("纯字母   用于老式密码框", true, true, false, false, false));
+        presetTop.addView(presetButton("纯数字\n用于银行卡、PIN", false, false, true, false, false));
+        presetTop.addView(presetButton("纯字母\n用于老式密码框", true, true, false, false, false));
         box.addView(presetTop);
 
         LinearLayout presetBottom = row();
-        presetBottom.addView(presetButton("字母+数字   通用", true, true, true, false, false));
-        presetBottom.addView(presetButton("全部字符   最安全", true, true, true, true, true));
+        presetBottom.addView(presetButton("字母+数字\n通用", true, true, true, false, false));
+        presetBottom.addView(presetButton("全部字符\n最安全", true, true, true, true, true));
         box.addView(presetBottom);
-        box.addView(space(10));
+        box.addView(space(8));
 
+        box.addView(space(2));
         switchUpper = addSwitch(box, "大写 A-Z", KEY_GEN_UPPER, true);
         switchLower = addSwitch(box, "小写 a-z", KEY_GEN_LOWER, true);
         switchDigits = addSwitch(box, "数字 0-9", KEY_GEN_DIGITS, true);
@@ -909,7 +910,14 @@ public class MainActivity extends Activity {
         view.setTextSize(Theme.SIZE_SMALL);
         view.setGravity(Gravity.CENTER);
         view.setLines(2);
-        view.setLayoutParams(new LinearLayout.LayoutParams(0, dp(52), 1f));
+        // Outlined rather than filled so four tiles in a grid do not read as a
+        // single solid block, which they did when the borders touched.
+        view.setBackground(glassCard());
+        LinearLayout.LayoutParams params = weightedParams();
+        params.height = dp(54);
+        params.topMargin = dp(4);
+        params.bottomMargin = dp(4);
+        view.setLayoutParams(params);
         view.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -2214,6 +2222,22 @@ public class MainActivity extends Activity {
         return layout;
     }
 
+    /**
+     * Margin for a control that shares its row with others.
+     *
+     * Only the weight based buttons get a gap, and it is applied to the button
+     * instead of the row. A container wide gutter would also separate label
+     * pairs such as "字符数 16" that are meant to read as one line, and a
+     * transparent spacer view would compete with the button's layout weight and
+     * shrink every button in the row.
+     */
+    private LinearLayout.LayoutParams weightedParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1f);
+        int gap = dp(Theme.SPACE_INLINE);
+        params.setMargins(gap / 2, 0, gap / 2, 0);
+        return params;
+    }
+
     private TextView section(String text) {
         TextView view = new TextView(this);
         view.setText(text);
@@ -2245,16 +2269,19 @@ public class MainActivity extends Activity {
         view.setTextColor(color);
         view.setTextSize(Theme.SIZE_BODY);
         view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(12), dp(10), dp(12), dp(10));
+        view.setPadding(dp(10), dp(11), dp(10), dp(11));
         view.setBackground(glassCard());
         view.setClickable(true);
+        // A minimum height keeps short and long labels the same size, so a row
+        // of buttons lines up instead of looking like stray boxes.
+        view.setMinHeight(dp(44));
         return view;
     }
 
     /** Same button, but sized to share a row equally. */
     private TextView weightedButton(String text, int color, View.OnClickListener listener) {
         TextView view = button(text, color);
-        view.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        view.setLayoutParams(weightedParams());
         view.setOnClickListener(listener);
         return view;
     }

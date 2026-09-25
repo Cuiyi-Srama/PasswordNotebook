@@ -133,6 +133,19 @@ public final class Theme {
     /** Delay before a periodic derivation is started, per keystroke. */
     public static final long GENERATE_DEBOUNCE_MS = 350L;
 
+    /**
+     * Gap between side by side controls.
+     *
+     * Equal weight buttons otherwise expand to touch each other, so the glass
+     * cards merge into one slab of border and the row stops reading as separate
+     * targets. Applied as a half gap on every child so the outer edges stay
+     * flush with the content margins.
+     */
+    public static final int SPACE_INLINE = 10;
+
+    /** Vertical gap between stacked controls. */
+    public static final int SPACE_BLOCK = 10;
+
     /** Shown while the periodic derivation runs off the main thread. */
     public static final String GENERATING_LABEL = "生成中";
 
