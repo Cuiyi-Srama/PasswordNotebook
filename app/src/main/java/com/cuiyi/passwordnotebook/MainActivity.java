@@ -2,7 +2,6 @@ package com.cuiyi.passwordnotebook;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.KeyguardManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -16,6 +15,7 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.Base64;
 import android.view.Gravity;
+import android.view.WindowManager;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CompoundButton;
@@ -60,9 +60,11 @@ import java.util.List;
  */
 public class MainActivity extends Activity {
 
-    private static final int REQUEST_DEVICE_CREDENTIAL = 1001;
     private static final String PREFS = "pwd_nb_prefs";
-    private static final String KEY_DEVICE_GATE = "device_gate";
+    private static final String KEY_HIDE_ON_BG = "hide_on_bg";
+    /** Grace period offered as an alternative to the default always-reask. */
+    private static final String KEY_BG_GRACE = "bg_grace";
+    private static final long BG_GRACE_MS = 30000L;
     private static final String KEY_LENGTH = "length";
     private static final String KEY_GEN_UPPER = "gen_upper";
     private static final String KEY_GEN_LOWER = "gen_lower";
@@ -76,6 +78,9 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private CyberRainView rain;
+    /** Blank layer shown over everything while the app is backgrounded. */
+    private View privacyShield;
+    private long backgroundedAt;
     private LinearLayout contentArea;
     private TextView[] tabViews;
     private int activeTab;
@@ -107,6 +112,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Blocks screenshots, screen recording and the thumbnail the system
+        // keeps for the recents screen. Without it the vault contents are one
+        // hardware-button press away from being copied out of the device.
+        getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE);
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         searchDebouncer = new Animations.Debouncer();
@@ -114,21 +124,6 @@ public class MainActivity extends Activity {
         gate();
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (rain != null) {
-            rain.resume();
-        }
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        if (rain != null) {
-            rain.pause();
-        }
-    }
 
     /**
      * Lock only when the activity is genuinely going away.
@@ -139,11 +134,80 @@ public class MainActivity extends Activity {
      * cases that matter (home, recents, screen off) without tripping on our own
      * dialogs.
      */
+    /**
+     * Covers the interface the moment the app stops being the foreground task,
+     * so the recents thumbnail and the first frame after switching back show a
+     * blank screen rather than a list of passwords.
+     */
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (rain != null) {
+            rain.pause();
+        }
+        if (!isChangingConfigurations()) {
+            backgroundedAt = System.currentTimeMillis();
+            showPrivacyShield();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (rain != null) {
+            rain.resume();
+        }
+        if (privacyShield != null && privacyShield.getVisibility() == View.VISIBLE) {
+            maybeDropShield();
+        }
+    }
+
     @Override
     protected void onStop() {
         super.onStop();
         if (!isChangingConfigurations()) {
             Vault.lock();
+        }
+    }
+
+    /**
+     * Removes the shield, re-asking for the master password first unless the
+     * user opted into the grace period and the gap was short enough.
+     *
+     * Default is re-ask on every background trip: a password manager that keeps
+     * showing the vault after an app switch is one shoulder-surf at a cafe away
+     * from leaking everything.
+     */
+    private void maybeDropShield() {
+        boolean vaultOpen = Vault.isUnlocked();
+        if (!vaultOpen) {
+            // onStop already locked the vault, so there is nothing to reveal.
+            hidePrivacyShield();
+            gate();
+            return;
+        }
+        boolean graceEnabled = prefs.getBoolean(KEY_BG_GRACE, false);
+        long away = System.currentTimeMillis() - backgroundedAt;
+        if (graceEnabled && away < BG_GRACE_MS) {
+            hidePrivacyShield();
+            return;
+        }
+        hidePrivacyShield();
+        Vault.lock();
+        gate();
+    }
+
+    private void showPrivacyShield() {
+        if (privacyShield == null) {
+            return;
+        }
+        privacyShield.setVisibility(View.VISIBLE);
+        privacyShield.bringToFront();
+    }
+
+    private void hidePrivacyShield() {
+        if (privacyShield != null) {
+            privacyShield.setVisibility(View.GONE);
         }
     }
 
@@ -158,14 +222,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_DEVICE_CREDENTIAL) {
-            boolean granted = resultCode == RESULT_OK;
-            prefs.edit().putBoolean(KEY_DEVICE_GATE, granted).apply();
-            toast(granted ? "已启用系统验证" : "已关闭系统验证");
-            if (activeTab == 2) {
-                showTab(2);
-            }
-        }
+        FilePicker.handleResult(this, requestCode, resultCode, data,
+                new FilePicker.Listener() {
+                    @Override
+                    public void onPicked(String text, String displayName) {
+                        readAndImport(text, displayName);
+                    }
+                });
     }
 
     // ---------------- shell ----------------
@@ -176,6 +239,15 @@ public class MainActivity extends Activity {
 
         rain = new CyberRainView(this);
         root.addView(rain, new FrameLayout.LayoutParams(-1, -1));
+
+        // Created here but kept hidden until the app leaves the foreground. It
+        // sits on top of the rain so nothing of the vault is visible in the
+        // recents thumbnail.
+        privacyShield = new View(this);
+        privacyShield.setBackgroundColor(Theme.BG_DEEP);
+        privacyShield.setVisibility(View.GONE);
+        privacyShield.setClickable(true);
+        root.addView(privacyShield, new FrameLayout.LayoutParams(-1, -1));
 
         // Scrim between the rain and the interface. Without this the glyphs sit
         // directly behind the text and make it unreadable, which reads as the
@@ -280,7 +352,7 @@ public class MainActivity extends Activity {
         box.addView(first);
         box.addView(second);
         box.addView(hint("主密码用于加密整个数据库，不会被保存。忘记就无法恢复。\n\n"
-                + "之后可以在“设置”里导入旧版备份。"));
+                + "之后可以在“设置”里导入数据。"));
 
         new AlertDialog.Builder(this)
                 .setTitle("设置主密码")
@@ -335,7 +407,9 @@ public class MainActivity extends Activity {
 
         // Offer the biometric route only when the user has enrolled it, so the
         // dialog does not promise something that would immediately fail.
-        if (BiometricKeyStore.isSupported() && BiometricKeyStore.hasWrappedKey(this)) {
+        final boolean biometricReady = BiometricKeyStore.isSupported()
+                && BiometricKeyStore.hasWrappedKey(this);
+        if (biometricReady) {
             builder.setNeutralButton("指纹解锁", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
@@ -350,7 +424,23 @@ public class MainActivity extends Activity {
                 }
             });
         }
-        builder.show();
+        final AlertDialog unlockDialog = builder.show();
+        // Fire the biometric prompt unprompted instead of waiting for a tap:
+        // the fingerprint is the intended path and the text field is only the
+        // fallback, so the common case must not cost an extra tap. The short
+        // delay lets the dialog finish animating in before the system prompt
+        // covers it, which otherwise looks like two dialogs fighting.
+        if (biometricReady) {
+            unlockDialog.getWindow().getDecorView().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    unlockWithBiometric();
+                }
+            }, 300L);
+        }
     }
 
     private void attemptUnlock(final String password, boolean offerEnrolment) {
@@ -1016,46 +1106,10 @@ public class MainActivity extends Activity {
         LinearLayout root = column();
 
         root.addView(section("安全"));
-        LinearLayout gateRow = row();
-        gateRow.setBackground(glassCard());
-        gateRow.setPadding(dp(12), dp(8), dp(12), dp(8));
-        TextView gateLabel = new TextView(this);
-        gateLabel.setText("解锁前要求系统验证");
-        gateLabel.setTextColor(Theme.TEXT_PRIMARY);
-        gateLabel.setTextSize(Theme.SIZE_BODY);
-        gateLabel.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
-        gateRow.addView(gateLabel);
-        final Switch gateSwitch = new Switch(this);
-        gateSwitch.setChecked(prefs.getBoolean(KEY_DEVICE_GATE, false));
-        gateSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton button, boolean checked) {
-                if (!checked) {
-                    prefs.edit().putBoolean(KEY_DEVICE_GATE, false).apply();
-                    return;
-                }
-                KeyguardManager keyguard = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
-                if (keyguard == null || !keyguard.isKeyguardSecure()) {
-                    toast("请先在系统里设置锁屏密码或指纹");
-                    button.setChecked(false);
-                    return;
-                }
-                Intent confirm = keyguard.createConfirmDeviceCredentialIntent(
-                        "验证身份", "请验证系统锁屏以启用保护");
-                if (confirm == null) {
-                    toast("当前设备无法完成验证");
-                    button.setChecked(false);
-                    return;
-                }
-                startActivityForResult(confirm, REQUEST_DEVICE_CREDENTIAL);
-            }
-        });
-        gateRow.addView(gateSwitch);
-        root.addView(gateRow);
-        root.addView(hint("系统验证只是进入前的一道门，真正解开数据库的仍然是你的主密码。"));
 
         root.addView(space(6));
         root.addView(buildBiometricRow());
+        root.addView(buildBackgroundRow());
         root.addView(space(6));
         root.addView(fullButton("立即锁定", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
@@ -1068,13 +1122,15 @@ public class MainActivity extends Activity {
         }));
 
         root.addView(section("数据"));
-        root.addView(fullButton("导入旧版备份", Theme.TEXT_ACCENT, new View.OnClickListener() {
+        root.addView(fullButton("导入数据", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Animations.pressFeedback(v);
                 askImportLegacy();
             }
         }));
+        root.addView(hint("从文件或粘贴内容导入。支持旧版加密备份、逐行加密文本、"
+                + "Tab/逗号分隔的明文，以及“名称一行、密码一行”的双行格式。重复条目自动跳过。"));
         root.addView(space(6));
         root.addView(fullButton("导出加密备份", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
@@ -1084,13 +1140,14 @@ public class MainActivity extends Activity {
             }
         }));
         root.addView(space(6));
-        root.addView(fullButton("恢复加密备份", Theme.TEXT_ACCENT, new View.OnClickListener() {
+        root.addView(fullButton("从备份恢复整库（覆盖）", Theme.TEXT_DANGER, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Animations.pressFeedback(v);
                 askRestoreBackup();
             }
         }));
+        root.addView(hint("“从备份恢复整库”会清空当前全部记录再写入备份内容，请谨慎操作。"));
         root.addView(space(6));
         root.addView(fullButton("导出明文 CSV（危险）", Theme.TEXT_DANGER, new View.OnClickListener() {
             @Override
@@ -1119,6 +1176,41 @@ public class MainActivity extends Activity {
      * route reads the text itself so a 9 KB backup does not have to survive the
      * system clipboard.
      */
+    /**
+     * Controls what happens when the app comes back from the background.
+     *
+     * The default is to re-ask every time. The switch trades a little of that
+     * for convenience by allowing a short grace period, which is what most
+     * people actually want when they glance at a message and come straight
+     * back. Anything longer than the window still forces a re-ask.
+     */
+    private View buildBackgroundRow() {
+        LinearLayout row = row();
+        row.setBackground(glassCard());
+        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        TextView label = new TextView(this);
+        label.setText("切回时 30 秒内免验证");
+        label.setTextColor(Theme.TEXT_PRIMARY);
+        label.setTextSize(Theme.SIZE_BODY);
+        label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(label);
+
+        final Switch toggle = new Switch(this);
+        toggle.setChecked(prefs.getBoolean(KEY_BG_GRACE, false));
+        toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton button, boolean checked) {
+                prefs.edit().putBoolean(KEY_BG_GRACE, checked).apply();
+                toast(checked
+                        ? "30 秒内切回不需验证，超过则需重新验证"
+                        : "每次切回都需要验证");
+            }
+        });
+        row.addView(toggle);
+        return row;
+    }
+
     /** Fingerprint toggle for the settings tab. */
     private View buildBiometricRow() {
         LinearLayout row = row();
@@ -1156,16 +1248,15 @@ public class MainActivity extends Activity {
 
     private void askImportLegacy() {
         new AlertDialog.Builder(this)
-                .setTitle("导入旧版数据")
-                .setMessage("支持：旧版加密备份、旧版逐行加密文本、Tab/逗号/中文逗号分隔的明文，"
-                        + "以及“名称一行、密码一行”的双行格式。重复条目会自动跳过。")
+                .setTitle("导入数据")
+                .setMessage("选择导入方式。两种方式效果相同，文件方式更适合长内容。")
                 .setPositiveButton("选择文件", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
                         pickBackupFile();
                     }
                 })
-                .setNeutralButton("粘贴文本", new DialogInterface.OnClickListener() {
+                .setNeutralButton("粘贴内容", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
                         askPasteImport();
@@ -1176,42 +1267,26 @@ public class MainActivity extends Activity {
     }
 
     private void pickBackupFile() {
-        FilePicker.show(this, new FilePicker.Listener() {
-            @Override
-            public void onPicked(File file) {
-                readAndImport(file);
-            }
-        });
-    }
-
-    private void readAndImport(File file) {
         try {
-            String text = readText(file);
-            if (text.trim().isEmpty()) {
-                toast("文件是空的");
-                return;
-            }
-            confirmImport(text, file.getName());
+            FilePicker.show(this);
         } catch (Exception e) {
-            toast("读取失败：" + e.getMessage());
+            toast("无法打开文件选择器：" + e.getMessage());
         }
     }
 
-    private String readText(File file) throws Exception {
-        java.io.FileInputStream in = new java.io.FileInputStream(file);
-        try {
-            java.io.InputStreamReader reader = new java.io.InputStreamReader(in, UTF8);
-            StringBuilder sb = new StringBuilder((int) Math.max(256, file.length()));
-            char[] buffer = new char[8192];
-            int read;
-            while ((read = reader.read(buffer)) > 0) {
-                sb.append(buffer, 0, read);
-            }
-            return sb.toString();
-        } finally {
-            in.close();
+    /** Called from onActivityResult once the system picker returns a document. */
+    private void readAndImport(String text, String displayName) {
+        if (text == null) {
+            toast("读取失败，换一个文件试试");
+            return;
         }
+        if (text.trim().isEmpty()) {
+            toast("文件是空的");
+            return;
+        }
+        confirmImport(text, displayName == null ? "所选文件" : displayName);
     }
+
 
     private void askPasteImport() {
         final EditText input = textInput("粘贴备份内容");
