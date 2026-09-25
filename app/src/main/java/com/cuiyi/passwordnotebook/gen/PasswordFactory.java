@@ -45,6 +45,10 @@ public final class PasswordFactory {
     private static final int PERIODIC_ITERATIONS = 350_000;
     private static final int SITE_SALT_BYTES = 16;
 
+    /** Domain separation tag for {@link #deterministicSiteSalt}. */
+    private static final byte[] DETERMINISTIC_SALT_LABEL =
+            "pwdnb-site-salt-v1".getBytes();
+
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private PasswordFactory() {
@@ -191,6 +195,46 @@ public final class PasswordFactory {
         byte[] salt = new byte[SITE_SALT_BYTES];
         RANDOM.nextBytes(salt);
         return salt;
+    }
+
+    /**
+     * Salt derived from the core word and the usage label, with nothing stored.
+     *
+     * This is what makes a recomputable password live up to its name: the whole
+     * derivation input is core word + usage + period, so the same three values
+     * reproduce the password on any device, in any app, even with no backup at
+     * all. A random salt cannot do that, because losing the device would lose
+     * the salt and the password could never be derived again.
+     *
+     * The trade off is that two copies of this app with the same core word and
+     * usage produce the same salt, so an attacker holding the core word guesses
+     * can test candidates offline without needing anything from the device. That
+     * is what the 350 000 round count is there to make expensive, and users who
+     * would rather not accept it can pick the random salt instead.
+     *
+     * @return a salt of {@link #SITE_SALT_BYTES} bytes, or null if either input
+     *         is empty, in which case the caller must fall back to something else
+     */
+    public static byte[] deterministicSiteSalt(String coreWord, String siteId) {
+        if (coreWord == null || coreWord.isEmpty()) {
+            return null;
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            // A domain tag keeps this value distinct from any other hash the app
+            // computes over the same inputs.
+            digest.update(DETERMINISTIC_SALT_LABEL);
+            digest.update((byte) 0);
+            digest.update(coreWord.getBytes("UTF-8"));
+            digest.update((byte) 0);
+            digest.update((siteId == null ? "" : siteId).getBytes("UTF-8"));
+            byte[] full = digest.digest();
+            byte[] salt = new byte[SITE_SALT_BYTES];
+            System.arraycopy(full, 0, salt, 0, SITE_SALT_BYTES);
+            return salt;
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     /** Current year and week number, matching what the app displays. */

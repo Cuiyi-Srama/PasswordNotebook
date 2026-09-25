@@ -68,7 +68,19 @@ public class MainActivity extends Activity {
     /** Grace period offered as an alternative to the default always-reask. */
     private static final String KEY_BG_GRACE = "bg_grace";
     private static final long BG_GRACE_MS = 30000L;
+    /**
+     * Shown on the about page.
+     *
+     * Hand maintained: this project is built with the SDK tools directly rather
+     * than Gradle, so there is no generated BuildConfig to read it from. Kept
+     * next to the version passed to aapt2 link so the two stay in step.
+     */
+    private static final String APP_VERSION = "6.7";
+
     private static final String KEY_LENGTH = "length";
+
+    /** Whether the recomputable mode uses a device local salt instead of a derived one. */
+    private static final String KEY_RANDOM_SALT = "random_salt";
     private static final String KEY_GEN_UPPER = "gen_upper";
     private static final String KEY_GEN_LOWER = "gen_lower";
     private static final String KEY_GEN_DIGITS = "gen_digits";
@@ -140,6 +152,12 @@ public class MainActivity extends Activity {
     private int periodYear;
     private int periodWeek;
     private boolean periodicMode;
+
+    /**
+     * Recomputable mode only. Off means the salt is derived, so the password
+     * survives losing the device; on means it does not.
+     */
+    private boolean randomSiteSalt;
     /** Whether the weekly rollover selector is shown at all. */
     private boolean periodicRollEnabled;
 
@@ -153,6 +171,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         periodicRollEnabled = prefs.getBoolean(KEY_PERIOD_ROLL, false);
+        randomSiteSalt = prefs.getBoolean(KEY_RANDOM_SALT, false);
         // The length was written to preferences on every drag but never read
         // back, so a chosen length silently reverted to the default on the next
         // launch. Clamped here as well because a value stored by an older build
@@ -847,6 +866,7 @@ public class MainActivity extends Activity {
 
     private View buildRandomControls() {
         LinearLayout box = column();
+        box.addView(section("用哪些字符"));
         box.addView(buildCharsetControls());
         return box;
     }
@@ -863,7 +883,9 @@ public class MainActivity extends Activity {
      */
     private View buildCharsetControls() {
         LinearLayout box = column();
-        box.addView(section("用哪些字符"));
+        // The heading is drawn by the caller. This method used to add its own,
+        // and the recomputable branch added a second one above it, so the page
+        // showed "用哪些字符" twice in a row.
 
         // Four short chips on one line. The earlier two by two grid added a
         // second row of tall tiles whose captions repeated what the switches
@@ -1011,10 +1033,9 @@ public class MainActivity extends Activity {
     private View buildPeriodicControls() {
         LinearLayout box = column();
 
-        box.addView(section("① 核心词"));
-        box.addView(infoRow(
-                "只有你知道的一句话。",
-                "记住它，就能重新算出下面这些密码。\n"
+        box.addView(sectionWithInfo("① 核心词", "核心词",
+                "只有你知道的一句话。\n\n"
+                        + "记住它，就能重新算出下面这些密码。\n"
                         + "不要填写你在其他任何地方用过的密码。\n"
                         + "这句话不要写进任何云笔记，也别告诉别人。"));
 
@@ -1031,12 +1052,11 @@ public class MainActivity extends Activity {
         box.addView(coreWordField);
 
         box.addView(space(12));
-        box.addView(section("② 这是给谁用的"));
-        box.addView(infoRow(
-                "用在不同地方的标签。",
-                "可以是网站、App、银行卡、门禁、设备……任何要用密码的地方。\n"
+        box.addView(sectionWithInfoOptional("② 这是给谁用的", "这是给谁用的",
+                "可以是网站、App、银行卡、门禁、设备……任何要用密码的地方。\n\n"
                         + "这一项不需要保密，但每个地方要填不一样的内容。\n"
-                        + "换一个地方，算出来的密码就完全不同。"));
+                        + "换一个地方，算出来的密码就完全不同。\n\n"
+                        + "留空也可以，但那样所有用途都会算出同一个密码。"));
 
         siteSaltField = textInput("例如：招商银行 / 淘宝 / iPhone 解锁");
         siteSaltField.addTextChangedListener(new SimpleWatcher() {
@@ -1051,20 +1071,89 @@ public class MainActivity extends Activity {
         box.addView(section("③ 用哪些字符"));
         // Reuse the same pickers as the random mode so the checkboxes carry one
         // meaning across the app, rather than two subtly different ones.
+        // buildCharsetControls() no longer draws a heading of its own.
         box.addView(buildCharsetControls());
         if (charsetHint != null) {
             charsetHint.setVisibility(View.VISIBLE);
         }
 
+        box.addView(space(12));
+        addSpaced(box, buildSaltToggle());
+
         // The weekly rollover sits last because it is a deliberate choice: the
         // switch carries its own one-line explanation, and the icon spells out
         // the consequence for anyone who wants it.
-        box.addView(space(12));
         addSpaced(box, buildPeriodToggle());
         if (periodicRollEnabled) {
             addSpaced(box, buildPeriodSelector());
         }
         return box;
+    }
+
+    /**
+     * Chooses how the recomputable mode salts its derivation.
+     *
+     * Off (derived salt) is the default because it is the only setting that
+     * keeps the promise the mode makes. On is offered for the case where the
+     * user cares more about offline resistance than about portability, and the
+     * description says plainly what it costs: the password becomes tied to this
+     * device.
+     */
+    private View buildSaltToggle() {
+        LinearLayout card = row();
+        card.setBackground(glassCard());
+        card.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        LinearLayout labels = column();
+        labels.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+
+        LinearLayout titleRow = row();
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("使用随机盐（更安全）");
+        title.setTextColor(Theme.TEXT_PRIMARY);
+        title.setTextSize(Theme.SIZE_BODY);
+        titleRow.addView(title);
+        titleRow.addView(infoIcon("使用随机盐",
+                "关闭（默认）：盐值由核心词和用途标识算出，不保存任何东西。\n"
+                        + "只要记得核心词、用途和周次，换手机、换应用也能算出同一个密码。\n\n"
+                        + "开启：盐值在本机随机生成并保存，无法从核心词推出。\n"
+                        + "攻击者更难离线破解，但代价是\u2014\u2014"
+                        + "盐值只存在这台手机上，换了手机、卸了应用、清了数据，"
+                        + "这些密码就再也算不出来了。\n\n"
+                        + "不上传、不同步，盐值不会出现在备份文件里。"));
+        labels.addView(titleRow);
+
+        TextView sub = new TextView(this);
+        sub.setText(randomSiteSalt
+                ? "换手机后无法重建"
+                : "换手机也能重建");
+        sub.setTextColor(randomSiteSalt ? Theme.TEXT_DANGER : Theme.TEXT_MUTED);
+        sub.setTextSize(Theme.SIZE_TINY);
+        labels.addView(sub);
+        card.addView(labels);
+
+        final Switch toggle = new Switch(this);
+        toggle.setChecked(randomSiteSalt);
+        toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton button, boolean checked) {
+                if (checked == randomSiteSalt) {
+                    return;
+                }
+                randomSiteSalt = checked;
+                prefs.edit().putBoolean(KEY_RANDOM_SALT, checked).apply();
+                // The salt is part of the derivation input, so flipping this
+                // changes every recomputable password. Say so before the user
+                // discovers it by comparing against a saved record.
+                toast(checked
+                        ? "已改为随机盐：换手机后这些密码无法重建"
+                        : "已改为确定盐：换手机也能重建");
+                showTab(0);
+            }
+        });
+        card.addView(toggle);
+        return card;
     }
 
     /**
@@ -1133,25 +1222,6 @@ public class MainActivity extends Activity {
      *
      * @param extra optional control shown beneath the detail once expanded
      */
-    private View infoRow(String summary, String detail) {
-        LinearLayout box = row();
-        box.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView text = new TextView(this);
-        text.setText(summary);
-        text.setTextColor(Theme.TEXT_MUTED);
-        text.setTextSize(Theme.SIZE_SMALL);
-        text.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
-        box.addView(text);
-
-        // The whole line used to be the tap target and the detail unfolded in
-        // place, which pushed everything below it down and left a stale
-        // chevron behind. A small icon that opens a dialog keeps the layout
-        // still and costs one line instead of four.
-        box.addView(infoIcon(summary, detail));
-        return box;
-    }
-
     private View infoIcon(final String summary, final String detail) {
         TextView icon = new TextView(this);
         icon.setText("ⓘ");
@@ -1406,7 +1476,7 @@ public class MainActivity extends Activity {
         final int year = periodYear == 0 ? period[0] : periodYear;
         final int week = periodWeek == 0 ? period[1] : periodWeek;
         final int length = passwordLength;
-        final byte[] salt = siteSalt(site);
+        final byte[] salt = siteSalt(site, core);
         final long requestId = ++generateRequest;
         // Read the checkboxes on the UI thread and hand plain booleans to the
         // worker: touching a View from a background thread is undefined
@@ -1522,8 +1592,35 @@ public class MainActivity extends Activity {
         passwordView.setTextSize(size);
     }
 
-    /** Per-site salt, created on first use and stored in the clear. */
-    private byte[] siteSalt(String site) {
+    /**
+     * Salt for the recomputable mode.
+     *
+     * Two behaviours, chosen by the user because they trade a real property:
+     *
+     *   deterministic - derived from the core word and the usage label, nothing
+     *                   stored. The same three inputs always reproduce the
+     *                   password, on any device, which is the entire point of
+     *                   the mode. An attacker who is testing core word guesses
+     *                   can do so offline, so the iteration count carries the
+     *                   cost of a weak core word.
+     *
+     *   random        - a fresh salt stored on this device only. Harder to
+     *                   attack offline, but the salt lives nowhere else, so
+     *                   losing the device means the password can never be
+     *                   derived again. Users who pick this are warned.
+     *
+     * The random path also reaches back to salts written by older builds so an
+     * existing password keeps deriving after the upgrade.
+     */
+    private byte[] siteSalt(String site, String coreWord) {
+        if (!randomSiteSalt) {
+            byte[] derived = PasswordFactory.deterministicSiteSalt(coreWord, site);
+            if (derived != null) {
+                return derived;
+            }
+            // No core word yet; the caller shows "请输入核心词" before this can
+            // matter, but a null here would be a crash, so keep it total.
+        }
         String key = "site_salt_" + (site == null || site.isEmpty() ? "default" : site);
         String stored = prefs.getString(key, null);
         if (stored != null) {
@@ -1868,9 +1965,11 @@ public class MainActivity extends Activity {
         }));
 
         root.addView(section("关于"));
-        root.addView(hint("密码小本 v5\n\n"
+        root.addView(hint("密码小本 " + APP_VERSION + "\n\n"
                 + "数据使用 AES-256-GCM 加密，密钥由主密码通过 PBKDF2-HMAC-SHA256 派生，"
-                + "盐值随机、迭代次数按本机性能校准。主密码不保存，忘记则无法恢复。\n\n"
+                + "迭代次数按本机性能校准。主密码不保存，忘记则无法恢复。\n\n"
+                + "可重建密码的派生输入只有核心词、用途标识和周次，不含任何本机数据："
+                + "只要记住这三样，换设备、换应用也能算出同一个密码。\n\n"
                 + "应用不申请任何权限，不联网。备份文件本身是加密的。"));
 
         contentArea.addView(root);
@@ -2321,6 +2420,53 @@ public class MainActivity extends Activity {
         view.setTextSize(Theme.SIZE_BODY);
         view.setPadding(0, dp(18), 0, dp(8));
         return view;
+    }
+
+    /**
+     * Section heading with the help icon on the same line.
+     *
+     * The help used to be a separate row under the heading, printing a one line
+     * summary that the dialog then repeated in full. That made every field two
+     * rows of text for no extra information, so the summary is gone and only the
+     * icon remains, moved up beside the label where it reads as part of the
+     * heading rather than as body copy.
+     */
+    private View sectionWithInfo(String title, String dialogTitle, String detail) {
+        LinearLayout line = row();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        line.setPadding(0, dp(18), 0, dp(8));
+
+        TextView label = new TextView(this);
+        label.setText(title);
+        label.setTextColor(Theme.TEXT_SECONDARY);
+        label.setTextSize(Theme.SIZE_BODY);
+        line.addView(label);
+
+        line.addView(infoIcon(dialogTitle, detail));
+        return line;
+    }
+
+    /** Section heading carrying an optional marker, e.g. for a field that may be left blank. */
+    private View sectionWithInfoOptional(String title, String dialogTitle, String detail) {
+        LinearLayout line = row();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        line.setPadding(0, dp(18), 0, dp(8));
+
+        TextView label = new TextView(this);
+        label.setText(title);
+        label.setTextColor(Theme.TEXT_SECONDARY);
+        label.setTextSize(Theme.SIZE_BODY);
+        line.addView(label);
+
+        TextView optional = new TextView(this);
+        optional.setText("可选");
+        optional.setTextColor(Theme.TEXT_MUTED);
+        optional.setTextSize(Theme.SIZE_TINY);
+        optional.setPadding(dp(8), dp(2), 0, 0);
+        line.addView(optional);
+
+        line.addView(infoIcon(dialogTitle, detail));
+        return line;
     }
 
     private TextView hint(String text) {
