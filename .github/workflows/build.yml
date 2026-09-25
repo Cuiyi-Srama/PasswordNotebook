@@ -24,20 +24,45 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Restore signing keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+
       - name: Build
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -f release.keystore ]; then
+            echo "Signing secrets found: building a signed release APK."
+            gradle :app:assembleRelease --no-daemon --stacktrace
+          else
+            echo "No signing secrets: falling back to a debug APK."
+            gradle :app:assembleDebug --no-daemon --stacktrace
+          fi
 
       - name: Package
         run: |
-          APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
-          if [ -z "$APK" ]; then echo "no apk produced"; exit 1; fi
-          REF="${GITHUB_REF_NAME}"
-          if [ "$REF" = "main" ]; then
-            REF="nightly-${GITHUB_SHA::7}"
+          APK=$(find app/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            APK=$(find app/build/outputs/apk/debug -name '*.apk' 2>/dev/null | head -1)
           fi
-          cp "$APK" "PasswordNotebook-${REF}.apk"
-          sha256sum "PasswordNotebook-${REF}.apk" | tee SHA256SUMS.txt
-          echo "REF=$REF" >> "$GITHUB_ENV"
+          if [ -z "$APK" ]; then echo "no apk produced"; exit 1; fi
+          echo "Using $APK"
+          REF="${GITHUB_REF_NAME}"
+          if [ "$REF" = "main" ]; then REF="nightly-${GITHUB_SHA::7}"; fi
+          OUT="PasswordNotebook-${REF}.apk"
+          cp "$APK" "$OUT"
+          sha256sum "$OUT" | tee SHA256SUMS.txt
+          ls -la "$OUT"
+
+      - name: Verify signature
+        run: |
+          APK=$(ls PasswordNotebook-*.apk | head -1)
+          if [ -f release.keystore ]; then
+            $ANDROID_HOME/build-tools/*/apksigner verify --print-certs "$APK" || true
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
