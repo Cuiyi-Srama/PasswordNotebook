@@ -413,7 +413,10 @@ public class MainActivity extends Activity {
             builder.setNeutralButton("指纹解锁", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
-                    unlockWithBiometric();
+                    // Keep the dialog: the system prompt shows over it, and if
+                    // the fingerprint is cancelled the password field is still
+                    // there without needing a re-open.
+                    unlockWithBiometric(null);
                 }
             });
         } else {
@@ -437,7 +440,7 @@ public class MainActivity extends Activity {
                     if (isFinishing() || isDestroyed()) {
                         return;
                     }
-                    unlockWithBiometric();
+                    unlockWithBiometric(unlockDialog);
                 }
             }, 300L);
         }
@@ -524,7 +527,16 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void unlockWithBiometric() {
+    /**
+     * Runs the fingerprint flow.
+     *
+     * The unlock dialog is passed in so it can be dismissed once the prompt
+     * succeeds. Without that, the dialog stayed on screen after a successful
+     * fingerprint because setCancelable(false) keeps the framework from closing
+     * it, and the user was left staring at a prompt for a password they no
+     * longer needed to type.
+     */
+    private void unlockWithBiometric(final AlertDialog dialogToDismiss) {
         try {
             final Cipher cipher = BiometricKeyStore.cipherForUnlock(this);
             BiometricPrompt prompt = BiometricPromptFactory.create(this,
@@ -541,22 +553,23 @@ public class MainActivity extends Activity {
                             MainActivity.this, authorised);
                     if (recovered == null) {
                         toast("指纹凭据已失效，请用主密码解锁");
-                        askUnlock();
                         return;
                     }
                     try {
                         boolean ok = Vault.unlockWithKey(MainActivity.this, recovered);
                         if (ok) {
+                            if (dialogToDismiss != null) {
+                                dialogToDismiss.dismiss();
+                            }
+                            hidePrivacyShield();
                             toast("已解锁");
                             showTab(0);
                         } else {
                             BiometricKeyStore.clear(MainActivity.this);
                             toast("指纹凭据与密码库不匹配，已清除");
-                            askUnlock();
                         }
                     } catch (Exception e) {
                         toast("解锁失败：" + e.getMessage());
-                        askUnlock();
                     } finally {
                         com.cuiyi.passwordnotebook.crypto.KeyDerivation.wipe(recovered);
                     }
@@ -564,14 +577,14 @@ public class MainActivity extends Activity {
 
                 @Override
                 public void onFailed(String reason) {
+                    // Leaving the dialog up is the point here: the password
+                    // field is still the fallback the user needs.
                     toast(reason);
-                    askUnlock();
                 }
             });
         } catch (Exception e) {
             toast("无法使用指纹：" + e.getMessage());
             BiometricKeyStore.clear(this);
-            askUnlock();
         }
     }
 
@@ -795,11 +808,16 @@ public class MainActivity extends Activity {
                         switchExtended.isChecked());
             }
         } catch (IllegalArgumentException e) {
-            typewriter.finishWith("请至少启用一种字符类型");
+            // Surface the factory's own message. It already distinguishes
+            // "no class enabled" from "length too short for the classes", and
+            // the periodic path raises its own validation errors through here.
+            String message = e.getMessage();
+            typewriter.finishWith(message == null || message.isEmpty()
+                    ? "无法生成：参数不合法" : message);
             strengthView.setText("");
             return;
         } catch (Exception e) {
-            typewriter.finishWith("生成失败");
+            typewriter.finishWith("生成失败：" + e.getMessage());
             strengthView.setText("");
             return;
         }

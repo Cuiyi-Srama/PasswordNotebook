@@ -34,6 +34,9 @@ public final class LegacyReader {
 
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
     private static final int IV_BYTES = 12;
+
+    /** base64(IV 12 + tag 16) is 40 chars; anything shorter is not ciphertext. */
+    private static final int MIN_CIPHERTEXT_CHARS = 40;
     private static final int TAG_BITS = 128;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
@@ -228,14 +231,20 @@ public final class LegacyReader {
         if (index >= parts.length || parts[index] == null) {
             return "";
         }
+        // Only the surrounding separator padding is trimmed; whatever the
+        // decrypted value itself contains is preserved verbatim, because a
+        // password with a leading or trailing space is legal and silently
+        // stripping it would make the stored credential wrong.
         String value = parts[index].trim();
         if (value.isEmpty()) {
             return "";
         }
-        if (value.length() >= 32) {
+        // Ciphertext is base64(IV 12 + tag 16) at minimum, which is 40 chars,
+        // so anything shorter cannot be ciphertext and is kept as plain text.
+        if (value.length() >= MIN_CIPHERTEXT_CHARS) {
             String decoded = legacyDecrypt(value);
             if (decoded != null) {
-                return decoded.trim();
+                return decoded;
             }
         }
         return value;
@@ -278,12 +287,17 @@ public final class LegacyReader {
     }
 
     private static String legacyDecrypt(String encoded) {
-        if (encoded == null || encoded.length() < 28) {
+        if (encoded == null || encoded.isEmpty()) {
             return null;
         }
         try {
             byte[] all = Base64.decode(encoded, Base64.NO_WRAP);
-            if (all.length <= IV_BYTES + 16) {
+            // An empty field was stored as IV + tag with a zero-length ciphertext,
+            // which is exactly IV_BYTES + 16. Rejecting that length (the old code
+            // used <=) made every blank note or label look like a decryption
+            // failure, so the raw base64 was kept as the field value and the
+            // imported records showed garbage instead of an empty string.
+            if (all.length < IV_BYTES + 16) {
                 return null;
             }
             byte[] iv = new byte[IV_BYTES];

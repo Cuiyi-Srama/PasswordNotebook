@@ -53,31 +53,33 @@ public final class PasswordFactory {
                                 boolean common, boolean extended) {
         checkLength(length);
         StringBuilder pool = new StringBuilder();
-        StringBuilder classes = new StringBuilder();
+        // Count the enabled classes, not the characters they hold. Using the
+        // total character count here made every length shorter than the full
+        // alphabet (~84) fail, which disabled generation for any normal length.
+        int classCount = 0;
         if (upper) {
             pool.append(UPPER);
-            classes.append(UPPER);
+            classCount++;
         }
         if (lower) {
             pool.append(LOWER);
-            classes.append(LOWER);
+            classCount++;
         }
         if (digits) {
             pool.append(DIGITS);
-            classes.append(DIGITS);
+            classCount++;
         }
         if (common) {
             pool.append(SPECIAL_COMMON);
-            classes.append(SPECIAL_COMMON);
+            classCount++;
         }
         if (extended) {
             pool.append(SPECIAL_EXTENDED);
-            classes.append(SPECIAL_EXTENDED);
+            classCount++;
         }
         if (pool.length() == 0) {
             throw new IllegalArgumentException("enable at least one character class");
         }
-        int classCount = classes.length();
         if (length < classCount) {
             throw new IllegalArgumentException(
                     "length " + length + " cannot fit one character from each of the "
