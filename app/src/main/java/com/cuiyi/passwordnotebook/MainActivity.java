@@ -1187,16 +1187,79 @@ public class MainActivity extends Activity {
         if (lengthHint == null) {
             return;
         }
-        if (passwordLength <= 6) {
-            lengthHint.setText("银行卡、手机锁屏等常用长度");
-            lengthHint.setTextColor(Theme.TEXT_SECONDARY);
-        } else if (passwordLength <= 10) {
-            lengthHint.setText("多数网站的常规长度");
-            lengthHint.setTextColor(Theme.TEXT_MUTED);
-        } else {
-            lengthHint.setText("较长，安全性更好");
-            lengthHint.setTextColor(Theme.TEXT_MUTED);
+        lengthHint.setText(lengthComment(passwordLength));
+        // The low end is tinted differently on purpose. It is the one range
+        // where a casual reader might take the friendly wording as a
+        // recommendation, so it has to look like a caveat and not like praise.
+        lengthHint.setTextColor(passwordLength <= 6
+                ? Theme.TEXT_SECONDARY
+                : Theme.TEXT_MUTED);
+    }
+
+    /**
+     * Plain language for what a given length is good for.
+     *
+     * The wording is deliberately informal, but the ordering never changes: the
+     * short end stays marked as a niche, and the very long end is a joke rather
+     * than a suggestion. A hint that read as "longer is better, keep going"
+     * would be actively unhelpful because almost nothing accepts those values.
+     */
+    private String lengthComment(int length) {
+        if (length <= 4) {
+            return "老式设备的老长度，能过校验就行";
         }
+        if (length == 5) {
+            return "少见，某些旧系统还在用";
+        }
+        if (length == 6) {
+            return "银行卡、锁屏密码的标准长度";
+        }
+        if (length <= 8) {
+            return "不少网站的底线要求";
+        }
+        if (length <= 10) {
+            return "网站常规长度，够用";
+        }
+        if (length <= 12) {
+            return "主流推荐长度";
+        }
+        if (length <= 16) {
+            return "很扎实，大多数地方都能用";
+        }
+        if (length <= 20) {
+            return "相当长，安全性很充足";
+        }
+        if (length <= 24) {
+            return "很稳，不过恐怕有些网站要先抱怨一句";
+        }
+        if (length <= 32) {
+            return "密码管理器的最爱";
+        }
+        if (length <= 40) {
+            return "手动输入大概是场修行";
+        }
+        if (length <= 48) {
+            return "基本只能靠粘贴了";
+        }
+        if (length <= 64) {
+            return "这个长度已经能当加密密钥用了";
+        }
+        if (length <= 80) {
+            return "真的有网站会接受吗？";
+        }
+        if (length <= 99) {
+            return "已经开始离谱，但还没到极限";
+        }
+        if (length <= 110) {
+            return "这么长的密码你要干啥！";
+        }
+        if (length <= 120) {
+            return "粘贴都会嫌它占地方";
+        }
+        // MAX_LENGTH is 128, so this is the last stop. Kept as a plain branch
+        // rather than a fallback so an out of range value cannot slip through
+        // silently if the limits are ever widened.
+        return "128 位，好吧，你赢了";
     }
 
     private View buildPeriodSelector() {
