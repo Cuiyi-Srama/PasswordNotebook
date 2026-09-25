@@ -1,0 +1,119 @@
+name: Build Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v3.0)'
+        required: true
+        default: 'v3.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Build debug APK
+        run: |
+          gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Locate APK
+        id: find_apk
+        run: |
+          APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "Found: $APK"
+          ls -la "$APK"
+
+      - name: Rename artifact
+        id: rename
+        run: |
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          OUT="PasswordNotebook-${REF}.apk"
+          cp "${{ steps.find_apk.outputs.apk_path }}" "$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          sha256sum "$OUT" | tee SHA256SUMS.txt
+          ls -la "$OUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PasswordNotebook-APK
+          path: |
+            ${{ steps.rename.outputs.out }}
+            SHA256SUMS.txt
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: PasswordNotebook ${{ github.event.inputs.tag || github.ref_name }}
+          body: |
+            ## Security upgrade (v3.0)
+
+            This release fixes a fundamental flaw in the previous encryption design.
+
+            **Root cause:** the AES key was derived with a public constant used as BOTH
+            the PBKDF2 password and the salt, so the key could be recomputed offline by
+            anyone reading the APK. The 10,000 iterations provided no protection there,
+            because there was no user secret to guess.
+
+            **Fixes:**
+            - User master password now feeds PBKDF2-HMAC-SHA256 with a per-user random
+              16-byte salt and device-calibrated iteration count.
+            - Crypto layer is fail-closed: encryption/decryption failures raise instead
+              of silently falling back to plaintext or raw ciphertext.
+            - Core word and custom salt are encrypted at rest with a non-exportable
+              Android Keystore AES-GCM key.
+            - Password derivation routes the core word through a KDF with a per-site
+              random salt instead of a bare SHA-256; random mode now uses rejection
+              sampling to avoid modulo bias.
+            - Transactional migration for existing data: everything is decrypted to
+              memory first, any failure aborts, then a single atomic commit.
+
+            **Also fixed:** two pre-existing compile errors that broke the build
+            (`LinearLayout.setRadius` and a non-final lambda capture).
+
+            > Migration is one-way. Data stored under the old key should be treated as
+            > already disclosed, so rotate any password that was generated from the
+            > core word after migrating. Randomly generated passwords are unaffected
+            > by the key issue itself, but consider rotating high-value accounts as
+            > a precaution.
+
+            See SHA256SUMS.txt for the checksum.
+          files: |
+            ${{ steps.rename.outputs.out }}
+            SHA256SUMS.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
