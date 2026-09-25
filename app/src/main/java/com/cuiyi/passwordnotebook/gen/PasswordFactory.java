@@ -62,34 +62,19 @@ public final class PasswordFactory {
     public static String random(int length, boolean upper, boolean lower, boolean digits,
                                 boolean common, boolean extended) {
         checkLength(length);
-        StringBuilder pool = new StringBuilder();
+        String pool = buildAlphabet(upper, lower, digits, common, extended);
+        if (pool.isEmpty()) {
+            throw new IllegalArgumentException("enable at least one character class");
+        }
         // Count the enabled classes, not the characters they hold. Using the
         // total character count here made every length shorter than the full
         // alphabet (~84) fail, which disabled generation for any normal length.
         int classCount = 0;
-        if (upper) {
-            pool.append(UPPER);
-            classCount++;
-        }
-        if (lower) {
-            pool.append(LOWER);
-            classCount++;
-        }
-        if (digits) {
-            pool.append(DIGITS);
-            classCount++;
-        }
-        if (common) {
-            pool.append(SPECIAL_COMMON);
-            classCount++;
-        }
-        if (extended) {
-            pool.append(SPECIAL_EXTENDED);
-            classCount++;
-        }
-        if (pool.length() == 0) {
-            throw new IllegalArgumentException("enable at least one character class");
-        }
+        if (upper) classCount++;
+        if (lower) classCount++;
+        if (digits) classCount++;
+        if (common) classCount++;
+        if (extended) classCount++;
         if (length < classCount) {
             throw new IllegalArgumentException(
                     "length " + length + " cannot fit one character from each of the "
@@ -124,6 +109,29 @@ public final class PasswordFactory {
      */
     public static String periodic(String coreWord, String siteId, byte[] siteSalt,
                                   int year, int week, int length) throws Exception {
+        return periodic(coreWord, siteId, siteSalt, year, week, length,
+                true, true, true, true, true);
+    }
+
+    /**
+     * Recomputable password using an explicit character set.
+     *
+     * The character set is folded into the derivation input rather than applied
+     * afterwards. Two reasons: the enabled classes become part of what the
+     * password is derived from, so a later change of the checkboxes cannot
+     * silently turn an existing password into a different one while looking
+     * "the same" to the user; and the mapping then needs no rejection loop over
+     * a fixed alphabet, which keeps the output length exact for tiny alphabets
+     * such as digits-only bank PINs.
+     *
+     * A digits-only password has at most 10^length possibilities no matter how
+     * many PBKDF2 rounds are used: the rounds protect the core word, not the
+     * output space. The interface warns about this where it matters.
+     */
+    public static String periodic(String coreWord, String siteId, byte[] siteSalt,
+                                  int year, int week, int length,
+                                  boolean upper, boolean lower, boolean digits,
+                                  boolean common, boolean extended) throws Exception {
         if (coreWord == null || coreWord.trim().isEmpty()) {
             throw new IllegalArgumentException("core word must not be empty");
         }
@@ -132,9 +140,17 @@ public final class PasswordFactory {
         }
         checkLength(length);
 
+        String alphabet = buildAlphabet(upper, lower, digits, common, extended);
+        if (alphabet.isEmpty()) {
+            throw new IllegalArgumentException("enable at least one character class");
+        }
+
         StringBuilder material = new StringBuilder();
         material.append(coreWord.trim()).append('\u0000')
                 .append(siteId == null ? "" : siteId);
+        // The class selection is part of the input, so the same core word and
+        // usage label with a different alphabet yields an unrelated password.
+        material.append('\u0000').append(charClassTag(upper, lower, digits, common, extended));
         if (year != 0 || week != 0) {
             material.append('\u0000').append(year).append("-W").append(week);
         }
@@ -148,10 +164,27 @@ public final class PasswordFactory {
             KeyDerivation.wipe(secret);
         }
         try {
-            return mapToAlphabet(derived, length);
+            return mapToAlphabet(derived, length, alphabet);
         } finally {
             KeyDerivation.wipe(derived);
         }
+    }
+
+    /**
+     * Stable one-letter tag for a class selection.
+     *
+     * Kept separate from the alphabet itself so that reordering or extending
+     * one of the pools does not change every previously derived password.
+     */
+    private static String charClassTag(boolean upper, boolean lower, boolean digits,
+                                       boolean common, boolean extended) {
+        StringBuilder tag = new StringBuilder(5);
+        tag.append(upper ? 'U' : '-');
+        tag.append(lower ? 'L' : '-');
+        tag.append(digits ? 'D' : '-');
+        tag.append(common ? 'C' : '-');
+        tag.append(extended ? 'E' : '-');
+        return tag.toString();
     }
 
     public static byte[] newSiteSalt() {
@@ -182,7 +215,29 @@ public final class PasswordFactory {
      * length is filled.
      */
     static String mapToAlphabet(byte[] seed, int length) {
-        String alphabet = UPPER + LOWER + DIGITS + SPECIAL_COMMON + SPECIAL_EXTENDED;
+        return mapToAlphabet(seed, length,
+                UPPER + LOWER + DIGITS + SPECIAL_COMMON + SPECIAL_EXTENDED);
+    }
+
+    /**
+     * The characters offered by the currently enabled classes.
+     *
+     * Shared by both modes so the checkboxes mean the same thing everywhere.
+     * Returns an empty string when nothing is enabled; callers turn that into a
+     * user-visible error rather than dividing by zero.
+     */
+    public static String buildAlphabet(boolean upper, boolean lower, boolean digits,
+                                       boolean common, boolean extended) {
+        StringBuilder pool = new StringBuilder();
+        if (upper) pool.append(UPPER);
+        if (lower) pool.append(LOWER);
+        if (digits) pool.append(DIGITS);
+        if (common) pool.append(SPECIAL_COMMON);
+        if (extended) pool.append(SPECIAL_EXTENDED);
+        return pool.toString();
+    }
+
+    static String mapToAlphabet(byte[] seed, int length, String alphabet) {
         int size = alphabet.length();
         int limit = 256 - (256 % size);
 

@@ -111,6 +111,18 @@ public class MainActivity extends Activity {
     private TextView strengthView;
     private TextView lengthLabel;
     private SeekBar lengthSlider;
+    /**
+     * Set while a preset is being applied.
+     *
+     * Each setChecked would otherwise fire its listener and launch a separate
+     * derivation, so four switches meant four PBKDF2 runs for one tap. The flag
+     * coalesces them into a single regeneration at the end.
+     */
+    private boolean suppressCharsetRegenerate;
+
+    /** Line that explains the size of the currently enabled alphabet. */
+    private TextView charsetHint;
+
     private Switch switchUpper;
     private Switch switchLower;
     private Switch switchDigits;
@@ -692,8 +704,8 @@ public class MainActivity extends Activity {
         // "random" and "core word" are implementation words, while "可重建" is
         // the property that actually decides which one to pick.
         TextView modeButton = button(periodicMode
-                ? "模式：可重建密码　（点此改为完全随机）"
-                : "模式：完全随机　（点此改为可重建）", Theme.TEXT_ACCENT);
+                ? "当前：可重建密码　→　点此改为完全随机"
+                : "当前：完全随机　→　点此改为可重建密码", Theme.TEXT_ACCENT);
         modeButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -763,6 +775,9 @@ public class MainActivity extends Activity {
         } else {
             root.addView(buildRandomControls());
         }
+        // buildCharsetControls() runs inside both branches above and binds
+        // charsetHint to the freshly created view, so no extra wiring is needed
+        // here: switching mode rebuilds the whole tab through showTab().
 
         root.addView(section("长度"));
         LinearLayout lengthRow = row();
@@ -810,13 +825,139 @@ public class MainActivity extends Activity {
 
     private View buildRandomControls() {
         LinearLayout box = column();
-        box.addView(section("字符集"));
+        box.addView(buildCharsetControls());
+        return box;
+    }
+
+    /**
+     * Character class pickers, presets included.
+     *
+     * Shared by both modes. They used to exist only in the random mode, which
+     * meant a recomputable password was always the full alphabet and a bank
+     * card PIN of six digits could not be produced at all.
+     *
+     * The presets exist because turning four switches off by hand every time is
+     * exactly the kind of chore that makes a feature go unused.
+     */
+    private View buildCharsetControls() {
+        LinearLayout box = column();
+        box.addView(section("用哪些字符"));
+
+        LinearLayout presets = row();
+        presets.addView(weightedButton("纯数字", Theme.TEXT_SECONDARY, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                applyCharsetPreset(false, false, true, false, false);
+            }
+        }));
+        presets.addView(weightedButton("纯字母", Theme.TEXT_SECONDARY, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                applyCharsetPreset(true, true, false, false, false);
+            }
+        }));
+        presets.addView(weightedButton("字母+数字", Theme.TEXT_SECONDARY, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                applyCharsetPreset(true, true, true, false, false);
+            }
+        }));
+        presets.addView(weightedButton("全部", Theme.TEXT_SECONDARY, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                applyCharsetPreset(true, true, true, true, true);
+            }
+        }));
+        box.addView(presets);
+        box.addView(space(6));
+
         switchUpper = addSwitch(box, "大写 A-Z", KEY_GEN_UPPER, true);
         switchLower = addSwitch(box, "小写 a-z", KEY_GEN_LOWER, true);
         switchDigits = addSwitch(box, "数字 0-9", KEY_GEN_DIGITS, true);
         switchCommon = addSwitch(box, "常见符号", KEY_GEN_COMMON, true);
         switchExtended = addSwitch(box, "扩展符号", KEY_GEN_EXTENDED, false);
+
+        // Only meaningful once the switch can actually be flipped off; the
+        // random mode's class count check already refuses impossible lengths.
+        charsetHint = new TextView(this);
+        charsetHint.setTextColor(Theme.TEXT_MUTED);
+        charsetHint.setTextSize(Theme.SIZE_TINY);
+        charsetHint.setPadding(0, dp(6), 0, 0);
+        box.addView(charsetHint);
+        updateCharsetHint();
         return box;
+    }
+
+    /**
+     * Apply a preset to every class switch at once.
+     *
+     * Guarded so the resulting change notifications do not each kick off a
+     * derivation: the switches are set while a flag is raised, then a single
+     * regenerate runs once the final state is in place.
+     */
+    private void applyCharsetPreset(boolean upper, boolean lower, boolean digits,
+                                    boolean common, boolean extended) {
+        if (switchUpper == null) {
+            return;
+        }
+        suppressCharsetRegenerate = true;
+        switchUpper.setChecked(upper);
+        switchLower.setChecked(lower);
+        switchDigits.setChecked(digits);
+        switchCommon.setChecked(common);
+        switchExtended.setChecked(extended);
+        suppressCharsetRegenerate = false;
+        persistCharset();
+        updateCharsetHint();
+        regenerate();
+    }
+
+    /** Writes the current class selection to preferences. */
+    private void persistCharset() {
+        if (switchUpper == null) {
+            return;
+        }
+        prefs.edit()
+                .putBoolean(KEY_GEN_UPPER, switchUpper.isChecked())
+                .putBoolean(KEY_GEN_LOWER, switchLower.isChecked())
+                .putBoolean(KEY_GEN_DIGITS, switchDigits.isChecked())
+                .putBoolean(KEY_GEN_COMMON, switchCommon.isChecked())
+                .putBoolean(KEY_GEN_EXTENDED, switchExtended.isChecked())
+                .apply();
+    }
+
+    /**
+     * Explains the consequence of a narrow alphabet.
+     *
+     * A six digit PIN has a million possibilities. No number of PBKDF2 rounds
+     * changes that, because the rounds protect the core word and not the output
+     * space, so an attacker who knows the core word is what they are after can
+     * simply enumerate the result. The line is informational and only appears
+     * when the alphabet really is small.
+     */
+    private void updateCharsetHint() {
+        if (charsetHint == null || switchUpper == null) {
+            return;
+        }
+        String alphabet = PasswordFactory.buildAlphabet(
+                switchUpper.isChecked(), switchLower.isChecked(), switchDigits.isChecked(),
+                switchCommon.isChecked(), switchExtended.isChecked());
+        if (alphabet.isEmpty()) {
+            charsetHint.setText("至少启用一种字符类型");
+            charsetHint.setTextColor(Theme.TEXT_DANGER);
+            return;
+        }
+        charsetHint.setTextColor(Theme.TEXT_MUTED);
+        if (alphabet.length() <= 10) {
+            charsetHint.setText("可用字符只有 " + alphabet.length()
+                    + " 种。适合银行卡/PIN，但密码本身容易被穷举，请靠长度取胜。");
+        } else {
+            charsetHint.setText("共 " + alphabet.length() + " 种字符可选。");
+        }
     }
 
     /**
@@ -837,8 +978,11 @@ public class MainActivity extends Activity {
         LinearLayout box = column();
 
         box.addView(section("① 核心词"));
-        box.addView(hint("只有你知道的秘密。记住它，就能重新算出下面这些密码。"));
-        box.addView(hint("请勿填写你在其他任何地方用过的密码。"));
+        box.addView(infoRow(
+                "只有你知道的一句话。",
+                "记住它，就能重新算出下面这些密码。\n"
+                        + "不要填写你在其他任何地方用过的密码。\n"
+                        + "这句话不要写进任何云笔记，也别告诉别人。"));
 
         coreWordField = textInput("例如：一句只有你懂的话");
         // Each keystroke would otherwise start a 350 000 round derivation. The
@@ -854,8 +998,11 @@ public class MainActivity extends Activity {
 
         box.addView(space(12));
         box.addView(section("② 这是给谁用的"));
-        box.addView(hint("可以是网站、App、银行卡、门禁、设备……任何要用密码的地方。"));
-        box.addView(hint("这一项不必保密，但要在不同地方填不同的内容。"));
+        box.addView(infoRow(
+                "用在不同地方的标签。",
+                "可以是网站、App、银行卡、门禁、设备……任何要用密码的地方。\n"
+                        + "这一项不需要保密，但每个地方要填不一样的内容。\n"
+                        + "换一个地方，算出来的密码就完全不同。"));
 
         siteSaltField = textInput("例如：招商银行 / 淘宝 / iPhone 解锁");
         siteSaltField.addTextChangedListener(new SimpleWatcher() {
@@ -867,7 +1014,23 @@ public class MainActivity extends Activity {
         box.addView(siteSaltField);
 
         box.addView(space(12));
-        box.addView(buildPeriodToggle());
+        box.addView(section("③ 用哪些字符"));
+        // Reuse the same pickers as the random mode so the checkboxes carry one
+        // meaning across the app, rather than two subtly different ones.
+        box.addView(buildCharsetControls());
+        if (charsetHint != null) {
+            charsetHint.setVisibility(View.VISIBLE);
+        }
+
+        // The weekly rollover is a deliberate choice and the switch explains it
+        // on its own, so it moves into the collapsed area to keep the page calm.
+        box.addView(space(12));
+        box.addView(infoRow(
+                "需要密码每周自动变化？",
+                "开启后，同一个用途在这周和下周会得到不同密码。\n"
+                        + "适合公司 WiFi 这类定期换密码的场景，日常账号建议保持关闭。\n"
+                        + "关闭状态下一个用途永远对应同一个密码。",
+                buildPeriodToggle()));
         if (periodicRollEnabled) {
             box.addView(buildPeriodSelector());
         }
@@ -921,6 +1084,58 @@ public class MainActivity extends Activity {
      * The label spells out what the number means instead of printing a bare
      * “W39”, and the buttons say what they do.
      */
+    /**
+     * A one-line label with the explanation tucked behind it.
+     *
+     * The generator page used to print two or three grey paragraphs under every
+     * heading. They were useful once and noise afterwards, and they were the
+     * main reason the page read as cluttered. Here the summary stays visible
+     * and the detail appears on tap, so nothing is lost and the default view is
+     * quiet.
+     *
+     * @param extra optional control shown beneath the detail once expanded
+     */
+    private View infoRow(String summary, String detail, View extra) {
+        LinearLayout box = column();
+
+        final TextView header = new TextView(this);
+        // A chevron encodes collapsed state without spending a second line.
+        header.setText("ⓘ  " + summary);
+        header.setTextColor(Theme.TEXT_SECONDARY);
+        header.setTextSize(Theme.SIZE_SMALL);
+        header.setPadding(0, dp(2), 0, dp(2));
+        box.addView(header);
+
+        LinearLayout detailBox = column();
+        detailBox.setVisibility(View.GONE);
+        TextView detailText = new TextView(this);
+        detailText.setText(detail);
+        detailText.setTextColor(Theme.TEXT_MUTED);
+        detailText.setTextSize(Theme.SIZE_TINY);
+        detailText.setLineSpacing(0f, 1.35f);
+        detailText.setPadding(dp(14), dp(4), 0, dp(4));
+        detailBox.addView(detailText);
+        if (extra != null) {
+            detailBox.addView(extra);
+        }
+        box.addView(detailBox);
+
+        header.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                boolean show = detailBox.getVisibility() != View.VISIBLE;
+                detailBox.setVisibility(show ? View.VISIBLE : View.GONE);
+                header.setText((show ? "ⓘ  " : "ⓘ  ") + summary);
+            }
+        });
+        return box;
+    }
+
+    private View infoRow(String summary, String detail) {
+        return infoRow(summary, detail, null);
+    }
+
     private View buildPeriodSelector() {
         LinearLayout outer = column();
         outer.setBackground(glassCard());
@@ -1069,6 +1284,14 @@ public class MainActivity extends Activity {
         final int length = passwordLength;
         final byte[] salt = siteSalt(site);
         final long requestId = ++generateRequest;
+        // Read the checkboxes on the UI thread and hand plain booleans to the
+        // worker: touching a View from a background thread is undefined
+        // behaviour even for a read this simple.
+        final boolean upper = switchUpper == null || switchUpper.isChecked();
+        final boolean lower = switchLower == null || switchLower.isChecked();
+        final boolean digits = switchDigits == null || switchDigits.isChecked();
+        final boolean common = switchCommon == null || switchCommon.isChecked();
+        final boolean extended = switchExtended != null && switchExtended.isChecked();
 
         showGeneratingIndicator();
         generateExecutor.execute(new Runnable() {
@@ -1077,7 +1300,8 @@ public class MainActivity extends Activity {
                 String result = null;
                 String error = null;
                 try {
-                    result = PasswordFactory.periodic(core, site, salt, year, week, length);
+                    result = PasswordFactory.periodic(core, site, salt, year, week, length,
+                            upper, lower, digits, common, extended);
                 } catch (IllegalArgumentException e) {
                     error = e.getMessage() == null ? "参数不合法" : e.getMessage();
                 } catch (Exception e) {
@@ -2022,6 +2246,13 @@ public class MainActivity extends Activity {
             @Override
             public void onCheckedChanged(CompoundButton button, boolean checked) {
                 prefs.edit().putBoolean(prefKey, checked).apply();
+                // Presets drive several switches in one tap; while that is in
+                // progress each notification must stay silent or the page would
+                // derive once per switch instead of once per tap.
+                if (suppressCharsetRegenerate) {
+                    return;
+                }
+                updateCharsetHint();
                 regenerate();
             }
         });
