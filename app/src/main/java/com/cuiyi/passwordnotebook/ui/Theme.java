@@ -72,6 +72,62 @@ public final class Theme {
     /** Border of glass cards. */
     public static final int SURFACE_STROKE = 0x4480FFA0;
 
+    // ---- interface styles ----
+    /**
+     * Three looks, chosen in settings.
+     *
+     * CYBER is the original: rain, neon edges, translucent panels.
+     * MINIMAL drops the animation and makes the panels almost opaque, which
+     * is both the calmest to read and the cheapest to draw.
+     * GLASS paints each panel from a blurred capture of the backdrop behind
+     * it, so the rain shows through the way it would through a real pane.
+     */
+    public static final int STYLE_CYBER = 0;
+    public static final int STYLE_MINIMAL = 1;
+    public static final int STYLE_GLASS = 2;
+    public static final int STYLE_DEFAULT = STYLE_CYBER;
+
+    /** Nearly opaque: the minimal style wants legibility, not depth. */
+    public static final int SURFACE_MINIMAL = 0xF20C1218;
+
+    /** Glass: how far the blur reaches, and how much colour is mixed in. */
+    public static final int GLASS_BLUR_DP = 18;
+    public static final int GLASS_THICKNESS_DP = 16;
+    public static final float GLASS_TINT = 0.12f;
+    public static final int GLASS_TINT_COLOR = 0xFF7FFFD8;
+
+    // ---- glassmorphism ----
+
+    /**
+     * Real frosted glass, as opposed to the flat translucent panel this used to
+     * be.
+     *
+     * A glass card is three things together: a fill transparent enough to let
+     * the background through, a light one pixel edge standing in for the
+     * highlight a real pane catches, and a blur of whatever sits behind it.
+     * The first two only look right with the third; without the blur the card
+     * reads as a plain coloured rectangle, which is exactly what the old
+     * SURFACE value produced.
+     */
+    public static final int GLASS_FILL = 0x1F8FFFE0;
+    /** Toward white, not toward the accent: glass edges bend light neutrally. */
+    public static final int GLASS_STROKE = 0x4DFFFFFF;
+    public static final int GLASS_STROKE_WIDTH = 1;
+
+    /**
+     * Blur radii, in dp.
+     *
+     * Each blurred card costs a GPU pass, so these stay modest. The values are
+     * far enough apart that the three settings are tellable apart at a glance
+     * without the heaviest one turning scrolling into a slideshow.
+     */
+    public static final int GLASS_BLUR_LIGHT = 10;
+    public static final int GLASS_BLUR_MEDIUM = 20;
+    public static final int GLASS_BLUR_HEAVY = 34;
+
+    /** Index of the middle setting, used as the default. */
+    public static final int GLASS_BLUR_DEFAULT = 1;
+
     public static final int RADIUS_CARD = 16;
     public static final int RADIUS_FIELD = 10;
     public static final int STROKE_WIDTH = 2;

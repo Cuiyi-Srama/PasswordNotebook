@@ -40,6 +40,8 @@ import com.cuiyi.passwordnotebook.gen.PasswordFactory;
 import com.cuiyi.passwordnotebook.ui.Animations;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory.BiometricPrompt;
+import com.cuiyi.passwordnotebook.ui.Backdrop;
+import com.cuiyi.passwordnotebook.ui.GlassCard;
 import com.cuiyi.passwordnotebook.ui.CyberRainView;
 import com.cuiyi.passwordnotebook.ui.FilePicker;
 import com.cuiyi.passwordnotebook.ui.FileSaver;
@@ -75,6 +77,13 @@ public class MainActivity extends Activity {
 
     /** When on, copied passwords are left discoverable by the system. */
     private static final String KEY_CLIP_HISTORY = "clip_history";
+
+    /** Frosted glass cards, on by default. */
+    private static final String KEY_GLASS = "glass";
+    private static final String KEY_GLASS_BLUR = "glass_blur";
+
+    /** Which interface style is selected. */
+    private static final String KEY_STYLE = "style";
     private static final long BG_GRACE_MS = 30000L;
     /**
      * Shown on the about page.
@@ -120,6 +129,8 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private CyberRainView rain;
+    /** Dimming layer between the rain and the interface. */
+    private View scrimLayer;
     /** Blank layer shown over everything while the app is backgrounded. */
     private View privacyShield;
     private long backgroundedAt;
@@ -203,6 +214,16 @@ public class MainActivity extends Activity {
      * The save dialog is asynchronous, so the text has to survive the trip out
      * to the system picker and back. Cleared once written.
      */
+    /** Whether cards are drawn as frosted glass. */
+    /** Which of the three looks is active. */
+    private int style = Theme.STYLE_DEFAULT;
+    /** Drives the periodic backdrop capture used by the glass style. */
+    private final android.os.Handler backdropHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean capturingBackdrop;
+    /** 0 light, 1 medium, 2 heavy. */
+    private int glassBlurIndex = Theme.GLASS_BLUR_DEFAULT;
+
     private String pendingExportText;
     private boolean pendingExportSealed;
 
@@ -232,6 +253,8 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         periodicRollEnabled = prefs.getBoolean(KEY_PERIOD_ROLL, false);
         randomSiteSalt = prefs.getBoolean(KEY_RANDOM_SALT, false);
+        style = prefs.getInt(KEY_STYLE, Theme.STYLE_DEFAULT);
+        glassBlurIndex = prefs.getInt(KEY_GLASS_BLUR, Theme.GLASS_BLUR_DEFAULT);
         sortByTime = !SORT_NAME.equals(prefs.getString(KEY_SORT, SORT_TIME));
         // The length was written to preferences on every drag but never read
         // back, so a chosen length silently reverted to the default on the next
@@ -267,6 +290,8 @@ public class MainActivity extends Activity {
         if (rain != null) {
             rain.pause();
         }
+        // No point recapturing the backdrop while the app is not visible.
+        stopBackdropCapture();
         if (!isChangingConfigurations()) {
             backgroundedAt = System.currentTimeMillis();
             showPrivacyShield();
@@ -280,6 +305,9 @@ public class MainActivity extends Activity {
         if (rain != null) {
             rain.resume();
         }
+        // Reapplies the selected style: the rain may have been hidden while the
+        // glass backdrop capture, if any, has to be restarted.
+        applyStyle();
         if (privacyShield != null && privacyShield.getVisibility() == View.VISIBLE) {
             cancelGraceExpiry();
             maybeDropShield();
@@ -438,7 +466,8 @@ public class MainActivity extends Activity {
         // Scrim between the rain and the interface. Without this the glyphs sit
         // directly behind the text and make it unreadable, which reads as the
         // screen being broken rather than as a background.
-        View scrim = new View(this);
+        scrimLayer = new View(this);
+        View scrim = scrimLayer;
         scrim.setBackgroundColor(Theme.SCRIM);
         scrim.setClickable(false);
         scrim.setFocusable(false);
@@ -878,7 +907,7 @@ public class MainActivity extends Activity {
         // buttons visibly jumped. Long values shrink instead of wrapping onto
         // an ever-growing number of lines.
         ScrollView passwordBox = new ScrollView(this);
-        passwordBox.setBackground(glassCard());
+        passwordBox.setBackground(styleCardBackground());
         passwordBox.setFillViewport(true);
         // The box keeps a fixed height so the controls below it do not jump on
         // every regeneration. That height is scaled with the system font size,
@@ -1238,8 +1267,7 @@ public class MainActivity extends Activity {
      * device.
      */
     private View buildSaltToggle() {
-        LinearLayout card = row();
-        card.setBackground(glassCard());
+        LinearLayout card = cardColumn(LinearLayout.HORIZONTAL);
         card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
                 dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
@@ -1302,8 +1330,7 @@ public class MainActivity extends Activity {
      * its own every week is a niche need and a silent source of lockouts.
      */
     private View buildPeriodToggle() {
-        LinearLayout row = row();
-        row.setBackground(glassCard());
+        LinearLayout row = cardColumn(LinearLayout.HORIZONTAL);
         row.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
                 dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
@@ -1471,8 +1498,7 @@ public class MainActivity extends Activity {
     }
 
     private View buildPeriodSelector() {
-        LinearLayout outer = column();
-        outer.setBackground(glassCard());
+        LinearLayout outer = cardColumn(LinearLayout.VERTICAL);
         outer.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V),
                 dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V));
 
@@ -2169,8 +2195,7 @@ public class MainActivity extends Activity {
     }
 
     private View recordCard(final Entry entry) {
-        LinearLayout card = column();
-        card.setBackground(glassCard());
+        LinearLayout card = cardColumn(LinearLayout.VERTICAL);
         card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V),
                 dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V));
         card.setClickable(true);
@@ -2378,6 +2403,9 @@ public class MainActivity extends Activity {
             }
         }));
 
+        root.addView(section("外观"));
+        addSpaced(root, buildStyleRow());
+
         root.addView(section("数据"));
         root.addView(fullButton("导入数据", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
@@ -2454,16 +2482,8 @@ public class MainActivity extends Activity {
         return prefs.getBoolean(KEY_CLIP_HISTORY, false);
     }
 
-    /**
-     * Lets the user opt the clipboard back into history and sync.
-     *
-     * Left as its own card rather than folded into the grace period row because
-     * the two have nothing to do with each other and a single mis-tap here has
-     * consequences the other does not.
-     */
     private View buildClipboardRow() {
-        LinearLayout card = column();
-        card.setBackground(glassCard());
+        LinearLayout card = cardColumn(LinearLayout.VERTICAL);
         card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
                 dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
@@ -2507,8 +2527,7 @@ public class MainActivity extends Activity {
     }
 
     private View buildBackgroundRow() {
-        LinearLayout row = row();
-        row.setBackground(glassCard());
+        LinearLayout row = cardColumn(LinearLayout.HORIZONTAL);
         row.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
                 dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
@@ -2536,8 +2555,7 @@ public class MainActivity extends Activity {
 
     /** Fingerprint toggle for the settings tab. */
     private View buildBiometricRow() {
-        LinearLayout row = row();
-        row.setBackground(glassCard());
+        LinearLayout row = cardColumn(LinearLayout.HORIZONTAL);
         row.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
                 dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
@@ -3096,6 +3114,174 @@ public class MainActivity extends Activity {
         return toggle;
     }
 
+    /** How often the glass backdrop is recaptured, in milliseconds. */
+    private static final long CAPTURE_INTERVAL_MS = 600L;
+
+    /**
+     * A card container in the current style.
+     *
+     * Everything that builds a card goes through here, so switching style moves
+     * a single decision rather than a dozen call sites.
+     */
+    private LinearLayout cardColumn(int orientation) {
+        boolean horizontal = orientation == LinearLayout.HORIZONTAL;
+        if (style == Theme.STYLE_GLASS) {
+            GlassCard glass = new GlassCard(this, Theme.RADIUS_CARD,
+                    Theme.GLASS_THICKNESS_DP, Theme.GLASS_TINT_COLOR, Theme.GLASS_TINT);
+            glass.setOrientation(orientation);
+            if (horizontal) {
+                glass.setGravity(Gravity.CENTER_VERTICAL);
+            }
+            return glass;
+        }
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(orientation);
+        if (horizontal) {
+            layout.setGravity(Gravity.CENTER_VERTICAL);
+        }
+        layout.setBackground(styleCardBackground());
+        return layout;
+    }
+
+    /** Flat panel used by the non-glass styles and by the password box. */
+    private GradientDrawable styleCardBackground() {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setShape(GradientDrawable.RECTANGLE);
+        drawable.setCornerRadius(dp(Theme.RADIUS_CARD));
+        drawable.setColor(style == Theme.STYLE_MINIMAL
+                ? Theme.SURFACE_MINIMAL : Theme.SURFACE);
+        drawable.setStroke(dp(Theme.STROKE_WIDTH), Theme.SURFACE_STROKE);
+        return drawable;
+    }
+
+    /**
+     * Applies whatever the style needs beyond the view tree itself.
+     *
+     * Called on resume and whenever the style changes. The rain is hidden in
+     * the minimal style, and the backdrop capture only runs while glass is
+     * selected, so the other two styles pay nothing for it.
+     */
+    private void applyStyle() {
+        if (rain != null) {
+            rain.setVisibility(style == Theme.STYLE_MINIMAL ? View.GONE : View.VISIBLE);
+        }
+        GlassCard.resetShader();
+        if (style == Theme.STYLE_GLASS) {
+            startBackdropCapture();
+        } else {
+            stopBackdropCapture();
+            Backdrop.release();
+        }
+    }
+
+    private void startBackdropCapture() {
+        if (capturingBackdrop || rain == null) {
+            return;
+        }
+        capturingBackdrop = true;
+        backdropHandler.post(backdropRefresh);
+    }
+
+    private void stopBackdropCapture() {
+        capturingBackdrop = false;
+        backdropHandler.removeCallbacks(backdropRefresh);
+    }
+
+    /**
+     * Re-renders the blurred backdrop the glass panes sample.
+     *
+     * Not per frame: the rain drifts slowly and the result is blurred anyway,
+     * so a few captures a second look identical to a continuous one at a
+     * fraction of the cost.
+     */
+    private final Runnable backdropRefresh = new Runnable() {
+        @Override
+        public void run() {
+            if (!capturingBackdrop) {
+                return;
+            }
+            refreshBackdrop();
+            backdropHandler.postDelayed(this, CAPTURE_INTERVAL_MS);
+        }
+    };
+
+    private void refreshBackdrop() {
+        if (rain == null || rain.getWidth() <= 0) {
+            return;
+        }
+        if (Backdrop.capture(rain, scrimLayer, Theme.BG_DEEP, dp(Theme.GLASS_BLUR_DP))) {
+            if (contentArea != null) {
+                contentArea.invalidate();
+            }
+        }
+    }
+
+    /** Style picker: one chip per look. */
+    private View buildStyleRow() {
+        LinearLayout card = cardColumn(LinearLayout.VERTICAL);
+        card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
+
+        TextView label = new TextView(this);
+        label.setText("界面风格");
+        label.setTextColor(Theme.TEXT_PRIMARY);
+        label.setTextSize(Theme.SIZE_BODY);
+        card.addView(label);
+
+        final TextView note = new TextView(this);
+        note.setTextSize(Theme.SIZE_TINY);
+        note.setPadding(0, dp(6), 0, 0);
+        note.setLineSpacing(dp(3), 1f);
+        note.setTextColor(Theme.TEXT_MUTED);
+        note.setText(styleDescription());
+        card.addView(note);
+
+        LinearLayout chips = row();
+        chips.setPadding(0, dp(8), 0, 0);
+        chips.addView(styleChip("赛博朋克", Theme.STYLE_CYBER, note));
+        chips.addView(styleChip("简约", Theme.STYLE_MINIMAL, note));
+        chips.addView(styleChip("玻璃拟态", Theme.STYLE_GLASS, note));
+        card.addView(chips);
+        return card;
+    }
+
+    private String styleDescription() {
+        if (style == Theme.STYLE_MINIMAL) {
+            return "关闭动画，纯色面板。最清晰、最省电。";
+        }
+        if (style == Theme.STYLE_GLASS) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                return "本机系统不支持背景模糊，效果会退化为半透明面板。";
+            }
+            return "面板实时采样并模糊背后的画面，边缘带折射。"
+                    + "开销最大，若卡顿可换回前两种。";
+        }
+        return "雨中霓虹，半透明面板。";
+    }
+
+    private TextView styleChip(String label, final int index, final TextView note) {
+        final TextView chip = button(label, Theme.TEXT_ACCENT);
+        chip.setTextSize(Theme.SIZE_TINY);
+        chip.setPadding(dp(Theme.SPACE_S), dp(Theme.SPACE_S),
+                dp(Theme.SPACE_S), dp(Theme.SPACE_S));
+        chip.setMinHeight(dp(34));
+        chip.setLayoutParams(weightedParams());
+        chip.setTextColor(index == style ? Theme.TEXT_ACCENT : Theme.TEXT_MUTED);
+        chip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                if (index == style) {
+                    return;
+                }
+                style = index;
+                prefs.edit().putInt(KEY_STYLE, index).apply();
+                applyStyle();
+                showTab(activeTab);
+            }
+        });
+        return chip;
+    }
     private GradientDrawable glassCard() {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(Theme.SURFACE);
