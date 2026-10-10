@@ -34,9 +34,19 @@
         android:allowBackup="false"
         android:theme="@style/AppTheme">
 
+        <!--
+            Locked to portrait. Rotating shortened the window to roughly half
+            its height while every screen here is a single vertical column, so
+            the generator and the dialogs ended up fighting for room. The
+            platform ignores this on large screens (Android 12L and later), so a
+            tablet can still rotate; the layout no longer depends on it being
+            honoured, because the content column is width capped and everything
+            that used to be a fixed height is a minimum instead.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

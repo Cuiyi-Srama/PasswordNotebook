@@ -427,10 +427,19 @@ public class MainActivity extends Activity {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     android.graphics.Insets bars = insets.getInsets(
                             WindowInsets.Type.systemBars());
+                    // The software keyboard is claimed here as well, not just the
+                    // bars. Targeting API 36 puts the app in forced edge to edge,
+                    // where the window no longer shrinks for the keyboard and
+                    // windowSoftInputMode=adjustResize stops having an effect.
+                    // Without the ime insets the keyboard simply covers whatever
+                    // field is being typed into.
+                    android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
                     top = bars.top;
-                    bottom = bars.bottom;
+                    bottom = Math.max(bars.bottom, ime.bottom);
                 } else {
                     top = insets.getSystemWindowInsetTop();
+                    // Below API 30 the platform already folds the keyboard into
+                    // this value when adjustResize still applies.
                     bottom = insets.getSystemWindowInsetBottom();
                 }
                 insetColumn.setPadding(0, top, 0, 0);
@@ -447,7 +456,8 @@ public class MainActivity extends Activity {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setBackgroundColor(Theme.SURFACE_STRONG);
-        tabs.setPadding(dp(8), dp(8), dp(8), dp(8));
+        tabs.setPadding(dp(Theme.PAD_SCREEN_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_SCREEN_H), dp(Theme.SPACE_S));
 
         String[] names = {"生成", "记录", "设置"};
         tabViews = new TextView[names.length];
@@ -477,7 +487,17 @@ public class MainActivity extends Activity {
         scroller.setLayoutParams(new LinearLayout.LayoutParams(-1, 0, 1f));
         contentArea = new LinearLayout(this);
         contentArea.setOrientation(LinearLayout.VERTICAL);
-        contentArea.setPadding(dp(12), dp(10), dp(12), dp(24));
+        // On a tablet or an unfolded foldable the content stops widening past
+        // MAX_CONTENT_WIDTH_DP and is centred by splitting the leftover space
+        // between the two sides. A phone always falls through to the plain
+        // margin, so this is inert on the device it is being built for.
+        int screenWidthDp = getResources().getConfiguration().screenWidthDp;
+        int sideMargin = Theme.PAD_SCREEN_H;
+        if (screenWidthDp > Theme.MAX_CONTENT_WIDTH_DP) {
+            sideMargin = (screenWidthDp - Theme.MAX_CONTENT_WIDTH_DP) / 2;
+        }
+        contentArea.setPadding(dp(sideMargin), dp(Theme.PAD_SCREEN_TOP),
+                dp(sideMargin), dp(Theme.PAD_SCREEN_BOTTOM));
         scroller.addView(contentArea);
         column.addView(scroller);
 
@@ -800,7 +820,17 @@ public class MainActivity extends Activity {
         ScrollView passwordBox = new ScrollView(this);
         passwordBox.setBackground(glassCard());
         passwordBox.setFillViewport(true);
-        LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, dp(Theme.PASSWORD_BOX_DP));
+        // The box keeps a fixed height so the controls below it do not jump on
+        // every regeneration. That height is scaled with the system font size,
+        // because at 1.5x a 108dp box holds far fewer lines and a long password
+        // ends up needing to be scrolled in a window built for two lines.
+        float fontScale = getResources().getConfiguration().fontScale;
+        int boxHeightDp = Theme.PASSWORD_BOX_DP;
+        if (fontScale > 1f) {
+            boxHeightDp = Math.min((int) (Theme.PASSWORD_BOX_DP * fontScale),
+                    Theme.PASSWORD_BOX_MAX_DP);
+        }
+        LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, dp(boxHeightDp));
         passwordBox.setLayoutParams(boxParams);
         passwordBox.setVerticalScrollBarEnabled(false);
 
@@ -810,7 +840,8 @@ public class MainActivity extends Activity {
         passwordView.setTextColor(Theme.TEXT_ACCENT);
         passwordView.setTypeface(android.graphics.Typeface.MONOSPACE);
         passwordView.setGravity(Gravity.CENTER);
-        passwordView.setPadding(dp(8), dp(12), dp(8), dp(12));
+        passwordView.setPadding(dp(Theme.SPACE_S), dp(Theme.SPACE_M),
+                dp(Theme.SPACE_S), dp(Theme.SPACE_M));
         passwordBox.addView(passwordView, new ScrollView.LayoutParams(-1, -2));
         root.addView(passwordBox);
         typewriter = new Animations.Typewriter(passwordView);
@@ -1149,7 +1180,8 @@ public class MainActivity extends Activity {
     private View buildSaltToggle() {
         LinearLayout card = row();
         card.setBackground(glassCard());
-        card.setPadding(dp(12), dp(8), dp(12), dp(8));
+        card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
         LinearLayout labels = column();
         labels.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
@@ -1212,7 +1244,8 @@ public class MainActivity extends Activity {
     private View buildPeriodToggle() {
         LinearLayout row = row();
         row.setBackground(glassCard());
-        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+        row.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
         LinearLayout labels = column();
         labels.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
@@ -1380,7 +1413,8 @@ public class MainActivity extends Activity {
     private View buildPeriodSelector() {
         LinearLayout outer = column();
         outer.setBackground(glassCard());
-        outer.setPadding(dp(12), dp(10), dp(12), dp(10));
+        outer.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V),
+                dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V));
 
         final TextView caption = new TextView(this);
         caption.setText(periodCaption());
@@ -2073,7 +2107,8 @@ public class MainActivity extends Activity {
     private View recordCard(final Entry entry) {
         LinearLayout card = column();
         card.setBackground(glassCard());
-        card.setPadding(dp(14), dp(12), dp(14), dp(12));
+        card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V),
+                dp(Theme.PAD_CARD_H), dp(Theme.PAD_CARD_V));
         card.setClickable(true);
 
         // Title and timestamp share a line. Stacking them separately made every
@@ -2346,7 +2381,8 @@ public class MainActivity extends Activity {
     private View buildBackgroundRow() {
         LinearLayout row = row();
         row.setBackground(glassCard());
-        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+        row.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
         TextView label = new TextView(this);
         label.setText("切回时 30 秒内免验证");
@@ -2374,7 +2410,8 @@ public class MainActivity extends Activity {
     private View buildBiometricRow() {
         LinearLayout row = row();
         row.setBackground(glassCard());
-        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+        row.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
 
         TextView label = new TextView(this);
         label.setText(BiometricKeyStore.isSupported()
@@ -2868,7 +2905,8 @@ public class MainActivity extends Activity {
         view.setTextColor(color);
         view.setTextSize(Theme.SIZE_BODY);
         view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(10), dp(11), dp(10), dp(11));
+        view.setPadding(dp(Theme.PAD_FIELD_H), dp(Theme.PAD_FIELD_V),
+                dp(Theme.PAD_FIELD_H), dp(Theme.PAD_FIELD_V));
         view.setBackground(glassCard());
         view.setClickable(true);
         // A minimum height keeps short and long labels the same size, so a row
@@ -2900,7 +2938,8 @@ public class MainActivity extends Activity {
         field.setHintTextColor(Theme.TEXT_SECONDARY);
         field.setTextSize(Theme.SIZE_BODY);
         field.setBackground(glassField());
-        field.setPadding(dp(12), dp(10), dp(12), dp(10));
+        field.setPadding(dp(Theme.PAD_FIELD_H), dp(Theme.PAD_FIELD_V),
+                dp(Theme.PAD_FIELD_H), dp(Theme.PAD_FIELD_V));
         field.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
         return field;
     }

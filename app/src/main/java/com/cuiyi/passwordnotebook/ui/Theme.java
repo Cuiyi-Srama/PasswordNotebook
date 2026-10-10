@@ -166,6 +166,54 @@ public final class Theme {
     /** Delay before a periodic derivation is started, per keystroke. */
     public static final long GENERATE_DEBOUNCE_MS = 350L;
 
+    // ---- layout scale ----
+
+    /**
+     * The four spacing steps everything is built from.
+     *
+     * Before this the file used seventeen distinct dp values (4, 6, 7, 8, 9,
+     * 10, 11, 12, 14, 18, 20 ...) with no rule behind any of them. The damage
+     * was not the count but the collisions: stacked cards elsewhere used 12 and
+     * record cards used 14, so the same kind of thing sat at two different
+     * indents on two screens. Restricting the vocabulary makes alignment a
+     * property of the scale instead of something to remember at each call site.
+     */
+    public static final int SPACE_XS = 4;
+    public static final int SPACE_S = 8;
+    public static final int SPACE_M = 12;
+    public static final int SPACE_L = 16;
+
+    /**
+     * Horizontal margin of the scrolling content from the screen edge.
+     *
+     * Paired with PAD_CARD / PAD_FIELD: text inside a card and text inside an
+     * input both land at PAD_SCREEN + PAD_CARD, so the page has one left edge
+     * instead of the two it had when cards used 14 and fields used 12.
+     */
+    public static final int PAD_SCREEN_H = 14;
+    public static final int PAD_SCREEN_TOP = 10;
+    public static final int PAD_SCREEN_BOTTOM = 24;
+
+    /** Inside a card. Equal to PAD_FIELD on purpose: see PAD_SCREEN_H. */
+    public static final int PAD_CARD_H = 14;
+    public static final int PAD_CARD_V = 12;
+
+    /** Inside an input field. Equal to PAD_CARD_H on purpose. */
+    public static final int PAD_FIELD_H = 14;
+    public static final int PAD_FIELD_V = 11;
+
+    /**
+     * Wrap on a wide screen.
+     *
+     * A phone never hits this. A tablet or an unfolded foldable would otherwise
+     * stretch a line of body text across 900dp, which is past the point where
+     * the eye can track from the end of one line to the start of the next.
+     */
+    public static final int MAX_CONTENT_WIDTH_DP = 560;
+
+    /** Ceiling for the password box once the system font scale is applied. */
+    public static final int PASSWORD_BOX_MAX_DP = 220;
+
     /**
      * Gap between side by side controls.
      *
