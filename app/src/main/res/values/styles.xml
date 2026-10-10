@@ -1,8 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+        Base theme for the interface.
+
+        Inherits the dark Material theme, which already keeps the system drawn
+        dialogs on a dark background. It used to be relied on alone, and the
+        result read as a foreign component: a stock grey Material dialog with
+        square corners landing on top of a near black glass interface. The
+        alertDialogTheme below ties those two together.
+    -->
     <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">#FF04070C</item>
         <item name="android:statusBarColor">#FF04070C</item>
+        <item name="android:navigationBarColor">#FF04070C</item>
         <item name="android:colorAccent">#FF00FF88</item>
+        <item name="android:alertDialogTheme">@style/AppDialog</item>
+    </style>
+
+    <!--
+        Dialog styling, so every AlertDialog in the app belongs to the same
+        family as the rest of the interface.
+
+        Colours are literal rather than references to Theme.java: this file is
+        compiled by aapt2 long before the Java constants exist. They must be
+        kept in step by hand.
+            windowBackground   theme SURFACE_STRONG   0xCC0A1220
+            textColorPrimary   theme TEXT_PRIMARY     0xFFD0FFD0
+            textColorSecondary theme TEXT_SECONDARY   0x88A0FFA0
+            colorAccent        theme TEXT_ACCENT      0xFF00FF88
+    -->
+    <style name="AppDialog" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">#F20A1220</item>
+        <item name="android:textColorPrimary">#FFD0FFD0</item>
+        <item name="android:textColorSecondary">#88A0FFA0</item>
+        <item name="android:colorAccent">#FF00FF88</item>
+        <item name="android:colorControlActivated">#FF00FF88</item>
     </style>
 </resources>

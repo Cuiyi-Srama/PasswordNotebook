@@ -627,7 +627,36 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /**
+     * Entry point for the unlock step.
+     *
+     * When fingerprint unlock has been enrolled this goes straight to the system
+     * prompt, holding the password dialog back as the fallback. The previous
+     * version opened both at once: the password dialog first, then the
+     * fingerprint prompt on a 300ms timer so the two would not animate
+     * together. That timer was felt as lag, and two stacked dialogs never
+     * stopped looking wrong. The password dialog is now only built when the
+     * fingerprint route is unavailable or has been abandoned.
+     */
     private void askUnlock() {
+        if (BiometricKeyStore.isSupported() && BiometricKeyStore.hasWrappedKey(this)) {
+            unlockWithBiometric(new Runnable() {
+                @Override
+                public void run() {
+                    showPasswordUnlockDialog(true);
+                }
+            });
+        } else {
+            showPasswordUnlockDialog(false);
+        }
+    }
+
+    /**
+     * The password fallback, built only when it is the path actually in use.
+     *
+     * @param biometricReady whether to also offer the fingerprint route
+     */
+    private void showPasswordUnlockDialog(final boolean biometricReady) {
         final EditText input = passwordInput("主密码");
         LinearLayout box = column();
         box.addView(input);
@@ -643,18 +672,19 @@ public class MainActivity extends Activity {
                     }
                 });
 
-        // Offer the biometric route only when the user has enrolled it, so the
-        // dialog does not promise something that would immediately fail.
-        final boolean biometricReady = BiometricKeyStore.isSupported()
-                && BiometricKeyStore.hasWrappedKey(this);
         if (biometricReady) {
             builder.setNeutralButton("指纹解锁", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
-                    // Keep the dialog: the system prompt shows over it, and if
-                    // the fingerprint is cancelled the password field is still
-                    // there without needing a re-open.
-                    unlockWithBiometric(null);
+                    // Tapping a button dismisses this dialog, so the prompt gets
+                    // the screen to itself. If it is abandoned the password
+                    // dialog comes back rather than leaving a dead end.
+                    unlockWithBiometric(new Runnable() {
+                        @Override
+                        public void run() {
+                            showPasswordUnlockDialog(true);
+                        }
+                    });
                 }
             });
         } else {
@@ -665,25 +695,8 @@ public class MainActivity extends Activity {
                 }
             });
         }
-        final AlertDialog unlockDialog = builder.show();
-        // Fire the biometric prompt unprompted instead of waiting for a tap:
-        // the fingerprint is the intended path and the text field is only the
-        // fallback, so the common case must not cost an extra tap. The short
-        // delay lets the dialog finish animating in before the system prompt
-        // covers it, which otherwise looks like two dialogs fighting.
-        if (biometricReady) {
-            unlockDialog.getWindow().getDecorView().postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (isFinishing() || isDestroyed()) {
-                        return;
-                    }
-                    unlockWithBiometric(unlockDialog);
-                }
-            }, 300L);
-        }
+        builder.show();
     }
-
     private void attemptUnlock(final String password, boolean offerEnrolment) {
         char[] chars = password.toCharArray();
         try {
@@ -697,7 +710,9 @@ public class MainActivity extends Activity {
                 }
             } else {
                 toast("主密码错误");
-                askUnlock();
+                // Reopen the password form only. Bouncing straight back to the
+                // fingerprint prompt would just fail again.
+                showPasswordUnlockDialog(true);
             }
         } catch (Exception e) {
             toast("无法读取数据库：" + e.getMessage());
@@ -774,14 +789,23 @@ public class MainActivity extends Activity {
      * it, and the user was left staring at a prompt for a password they no
      * longer needed to type.
      */
-    private void unlockWithBiometric(final AlertDialog dialogToDismiss) {
+    /**
+     * Runs the fingerprint prompt.
+     *
+     * @param onFallback run when the prompt cannot be shown, is cancelled or
+     *                   fails, so the caller can offer the password route.
+     *                   Null when the caller has nothing to add.
+     */
+    private void unlockWithBiometric(final Runnable onFallback) {
         try {
             final Cipher cipher = BiometricKeyStore.cipherForUnlock(this);
             BiometricPrompt prompt = BiometricPromptFactory.create(this,
                     "指纹解锁", "验证指纹以打开密码库");
             if (prompt == null) {
                 toast("此设备不支持指纹验证");
-                askUnlock();
+                if (onFallback != null) {
+                    onFallback.run();
+                }
                 return;
             }
             prompt.authenticate(cipher, new BiometricPromptFactory.Callback() {
@@ -796,9 +820,6 @@ public class MainActivity extends Activity {
                     try {
                         boolean ok = Vault.unlockWithKey(MainActivity.this, recovered);
                         if (ok) {
-                            if (dialogToDismiss != null) {
-                                dialogToDismiss.dismiss();
-                            }
                             hidePrivacyShield();
                             toast("已解锁");
                             showTab(0);
@@ -815,14 +836,18 @@ public class MainActivity extends Activity {
 
                 @Override
                 public void onFailed(String reason) {
-                    // Leaving the dialog up is the point here: the password
-                    // field is still the fallback the user needs.
                     toast(reason);
+                    if (onFallback != null) {
+                        onFallback.run();
+                    }
                 }
             });
         } catch (Exception e) {
             toast("无法使用指纹：" + e.getMessage());
             BiometricKeyStore.clear(this);
+            if (onFallback != null) {
+                onFallback.run();
+            }
         }
     }
 
@@ -1870,10 +1895,14 @@ public class MainActivity extends Activity {
     private TextView sortChip(String label, final String mode) {
         TextView chip = button(label, Theme.TEXT_ACCENT);
         chip.setTextSize(Theme.SIZE_TINY);
-        chip.setMinHeight(0);
-        LinearLayout.LayoutParams params = weightedParams();
-        params.height = dp(32);
-        chip.setLayoutParams(params);
+        // A fixed height clipped the label. button() already adds 11dp of
+        // vertical padding on both sides, so the text needs more room than a
+        // 32dp box allows and the glyphs were cut in half. Let it wrap the
+        // content instead.
+        chip.setPadding(dp(Theme.SPACE_S), dp(Theme.SPACE_S),
+                dp(Theme.SPACE_S), dp(Theme.SPACE_S));
+        chip.setMinHeight(dp(34));
+        chip.setLayoutParams(weightedParams());
         chip.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
