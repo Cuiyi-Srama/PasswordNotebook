@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * Minimal JSON for the vault body, so the app needs no third-party parser.
  *
- * Shape: {"v":5,"e":[{"t":..,"p":..,"n":..,"g":..,"u":123}, ...]}
+ * Shape: {"v":6,"e":[{"t":..,"p":..,"n":..,"g":..,"u":123}, ...]}
  *
  * Short keys keep the plaintext small before it is encrypted. The parser is
  * strict about structure and lenient about missing optional fields, so a body
@@ -15,13 +15,28 @@ import java.util.List;
  */
 public final class VaultJson {
 
+    /**
+     * Format generation of the body.
+     *
+     * Written since the first release but never read back, which meant a file
+     * from a future version would load happily into an older build. That is fine
+     * for a reader, but the older build rewrites the whole body on the next edit
+     * and silently drops any field it did not recognise. Refusing a generation
+     * this build does not know is the cheapest way to make that impossible.
+     *
+     * Bumped to 6 when the check was turned on, so files written from here on
+     * are distinguishable from those written by builds that ignored the field.
+     * Bodies with no "v" at all predate the marker and are read as usual.
+     */
+    public static final int FORMAT_VERSION = 6;
+
     private VaultJson() {
         throw new AssertionError("no instance");
     }
 
     public static String write(List<Entry> entries) {
         StringBuilder sb = new StringBuilder();
-        sb.append("{\"v\":").append(5).append(",\"e\":[");
+        sb.append("{\"v\":").append(FORMAT_VERSION).append(",\"e\":[");
         for (int i = 0; i < entries.size(); i++) {
             Entry e = entries.get(i);
             if (i > 0) {
@@ -46,9 +61,12 @@ public final class VaultJson {
         }
         Cursor cursor = new Cursor(json);
         cursor.expect('{');
+        long version = 0;
         while (true) {
             String key = cursor.readKey();
-            if ("e".equals(key)) {
+            if ("v".equals(key)) {
+                version = cursor.readLong();
+            } else if ("e".equals(key)) {
                 cursor.expect('[');
                 readEntries(cursor, out);
             } else {
@@ -60,6 +78,13 @@ public final class VaultJson {
                 continue;
             }
             break;
+        }
+        if (version > FORMAT_VERSION) {
+            // Checked after the scan rather than before it because the version
+            // key is not guaranteed to come first. Nothing has been persisted at
+            // this point, so throwing here discards the partial read safely.
+            throw new CryptoException("这份数据由更新版本的应用写入（v" + version
+                    + "），当前版本无法安全读取。请升级应用后再试。");
         }
         return out;
     }

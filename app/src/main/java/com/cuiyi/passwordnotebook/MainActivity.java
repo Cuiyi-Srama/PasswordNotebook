@@ -16,6 +16,7 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.Base64;
 import android.view.Gravity;
+import android.net.Uri;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.View;
@@ -41,6 +42,7 @@ import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory.BiometricPrompt;
 import com.cuiyi.passwordnotebook.ui.CyberRainView;
 import com.cuiyi.passwordnotebook.ui.FilePicker;
+import com.cuiyi.passwordnotebook.ui.FileSaver;
 import com.cuiyi.passwordnotebook.ui.Theme;
 import java.io.File;
 import javax.crypto.Cipher;
@@ -191,6 +193,15 @@ public class MainActivity extends Activity {
 
     private TextView sortTimeChip;
     private TextView sortNameChip;
+
+    /**
+     * Export payload waiting for the user to pick a destination.
+     *
+     * The save dialog is asynchronous, so the text has to survive the trip out
+     * to the system picker and back. Cleared once written.
+     */
+    private String pendingExportText;
+    private boolean pendingExportSealed;
 
     private HorizontalScrollView tagFilterScroll;
     private LinearLayout tagFilterStrip;
@@ -380,6 +391,27 @@ public class MainActivity extends Activity {
                         readAndImport(text, displayName);
                     }
                 });
+
+        Uri destination = FileSaver.handleResult(requestCode, resultCode, data);
+        if (destination == null) {
+            // Either not our request or the user backed out of the save dialog.
+            return;
+        }
+        if (pendingExportText == null) {
+            // The process was killed while the system dialog was in front, so the
+            // text that was going to be written is gone. Say so rather than
+            // silently writing nothing.
+            toast("导出内容已丢失，请重新导出");
+            return;
+        }
+        try {
+            FileSaver.write(this, destination, pendingExportText);
+            showExportDone(pendingExportSealed, FileSaver.displayName(destination));
+        } catch (Exception e) {
+            toast("写入失败：" + e.getMessage());
+        } finally {
+            pendingExportText = null;
+        }
     }
 
     // ---------------- shell ----------------
@@ -1723,7 +1755,7 @@ public class MainActivity extends Activity {
             return;
         }
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        clipboard.setPrimaryClip(ClipData.newPlainText("password", value));
+        clipboard.setPrimaryClip(sensitiveClip("password", value));
         toast("已复制");
     }
 
@@ -2191,7 +2223,7 @@ public class MainActivity extends Activity {
             public void onClick(View v) {
                 Animations.pressFeedback(v);
                 ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                clipboard.setPrimaryClip(ClipData.newPlainText("password", entry.password));
+                clipboard.setPrimaryClip(sensitiveClip("password", entry.password));
                 toast("已复制");
             }
         }));
@@ -2618,22 +2650,38 @@ public class MainActivity extends Activity {
 
     private void exportSealed() {
         try {
-            String sealed = Vault.exportSealed(this);
-            File target = writeTextAnywhere(SEALED_EXPORT_NAME, sealed);
-            showExportDone("加密备份已导出", target, true);
+            beginExport(Vault.exportSealed(this), SEALED_EXPORT_NAME, true);
         } catch (Exception e) {
             toast("导出失败：" + e.getMessage());
         }
     }
 
+    /**
+     * Hands the payload to the system save dialog.
+     *
+     * The destination is chosen by the user instead of guessed at, which is the
+     * only way to write somewhere they can actually find again without asking
+     * for a storage permission.
+     */
+    private void beginExport(String text, String fileName, boolean sealed) {
+        pendingExportText = text;
+        pendingExportSealed = sealed;
+        try {
+            FileSaver.show(this, fileName, "text/plain");
+        } catch (Exception e) {
+            pendingExportText = null;
+            toast("无法打开保存对话框：" + e.getMessage());
+        }
+    }
+
     /** Report the full path so the user can actually find the file again. */
-    private void showExportDone(String title, File target, boolean safeToShare) {
+    private void showExportDone(boolean safeToShare, String fileName) {
         String extra = safeToShare
                 ? "这份文件本身是加密的，可以安全地放进网盘。"
                 : "这份文件是明文的，用完请立即删除。";
         new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setMessage("位置：\n" + target.getAbsolutePath() + "\n\n" + extra)
+                .setTitle(safeToShare ? "加密备份已保存" : "明文 CSV 已保存")
+                .setMessage("文件：" + fileName + "\n\n" + extra)
                 .setPositiveButton("知道了", null)
                 .show();
     }
@@ -2664,8 +2712,7 @@ public class MainActivity extends Activity {
                         .append(csvField(entry.tag)).append(',')
                         .append(entry.updatedAt).append('\n');
             }
-            File target = writeTextAnywhere(PLAIN_EXPORT_NAME, csv.toString());
-            showExportDone("明文 CSV 已导出", target, false);
+            beginExport(csv.toString(), PLAIN_EXPORT_NAME, false);
         } catch (Exception e) {
             toast("导出失败：" + e.getMessage());
         }
@@ -2722,66 +2769,31 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /**
-     * Where to put exports.
-     *
-     * Public Download is the friendliest place, but on newer Android releases
-     * writing there can fail even with the legacy flag, so the app falls back
-     * to its own external directory rather than reporting a bare failure. The
-     * caller shows whichever path was actually used.
-     */
-    private List<File> exportCandidates() {
-        List<File> candidates = new ArrayList<File>();
-        candidates.add(new File("/sdcard/Download"));
-        try {
-            File external = getExternalFilesDir(null);
-            if (external != null) {
-                candidates.add(external);
-            }
-        } catch (Exception ignored) {
-            // no external dir on this device
-        }
-        candidates.add(getFilesDir());
-        return candidates;
-    }
-
-    /**
-     * Write the first location that accepts the data.
-     *
-     * @return the file that was written
-     * @throws Exception with the last failure reason when every location fails
-     */
-    private File writeTextAnywhere(String fileName, String text) throws Exception {
-        Exception lastFailure = null;
-        for (File dir : exportCandidates()) {
-            if (!dir.exists() && !dir.mkdirs()) {
-                continue;
-            }
-            if (!dir.canWrite()) {
-                continue;
-            }
-            File target = new File(dir, fileName);
-            try {
-                FileOutputStream out = new FileOutputStream(target);
-                try {
-                    OutputStreamWriter writer = new OutputStreamWriter(out, UTF8);
-                    writer.write(text);
-                    writer.flush();
-                } finally {
-                    out.close();
-                }
-                return target;
-            } catch (Exception e) {
-                lastFailure = e;
-            }
-        }
-        if (lastFailure != null) {
-            throw lastFailure;
-        }
-        throw new Exception("没有可写入的目录");
-    }
-
     // ---------------- small helpers ----------------
+
+    /**
+     * Builds a clipboard payload the system will not preview.
+     *
+     * Android 13 and later show the copied text in a system bubble. That bubble
+     * is drawn by SystemUI, so the window level FLAG_SECURE on this activity does
+     * not cover it: copying a password flashed it on screen in plain sight, and
+     * a screenshot taken in that moment captured it. Marking the clip sensitive
+     * makes the system show a neutral notice instead, and also keeps the value
+     * out of clipboard history and cross device sync.
+     *
+     * On releases before API 33 the extra is ignored and the clipboard behaves as
+     * it did before.
+     */
+    private ClipData sensitiveClip(String label, String value) {
+        ClipData clip = ClipData.newPlainText(label, value);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            android.os.PersistableBundle extras = clip.getDescription().getExtras();
+            if (extras != null) {
+                extras.putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true);
+            }
+        }
+        return clip;
+    }
 
     private LinearLayout column() {
         LinearLayout layout = new LinearLayout(this);
