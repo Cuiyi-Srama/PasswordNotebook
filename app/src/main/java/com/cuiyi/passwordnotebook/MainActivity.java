@@ -81,6 +81,11 @@ public class MainActivity extends Activity {
 
     /** Whether the recomputable mode uses a device local salt instead of a derived one. */
     private static final String KEY_RANDOM_SALT = "random_salt";
+
+    /** Record list ordering: "time" (newest first) or "name". */
+    private static final String KEY_SORT = "sort_mode";
+    private static final String SORT_TIME = "time";
+    private static final String SORT_NAME = "name";
     private static final String KEY_GEN_UPPER = "gen_upper";
     private static final String KEY_GEN_LOWER = "gen_lower";
     private static final String KEY_GEN_DIGITS = "gen_digits";
@@ -158,6 +163,17 @@ public class MainActivity extends Activity {
      * survives losing the device; on means it does not.
      */
     private boolean randomSiteSalt;
+
+    /**
+     * True sorts the record list by last change, newest first; false sorts it by
+     * title. New entries are appended to storage, so without this the newest
+     * record sat at the bottom of the list, which is not where anyone looks for
+     * the thing they just saved.
+     */
+    private boolean sortByTime = true;
+
+    private TextView sortTimeChip;
+    private TextView sortNameChip;
     /** Whether the weekly rollover selector is shown at all. */
     private boolean periodicRollEnabled;
 
@@ -172,6 +188,7 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         periodicRollEnabled = prefs.getBoolean(KEY_PERIOD_ROLL, false);
         randomSiteSalt = prefs.getBoolean(KEY_RANDOM_SALT, false);
+        sortByTime = !SORT_NAME.equals(prefs.getString(KEY_SORT, SORT_TIME));
         // The length was written to preferences on every drag but never read
         // back, so a chosen length silently reverted to the default on the next
         // launch. Clamped here as well because a value stored by an older build
@@ -1713,6 +1730,15 @@ public class MainActivity extends Activity {
         });
         root.addView(searchField);
 
+        LinearLayout sortRow = row();
+        sortRow.setPadding(0, dp(8), 0, dp(4));
+        sortTimeChip = sortChip("最近添加", SORT_TIME);
+        sortNameChip = sortChip("按名称", SORT_NAME);
+        sortRow.addView(sortTimeChip);
+        sortRow.addView(sortNameChip);
+        root.addView(sortRow);
+        refreshSortChips();
+
         recordContainer = new LinearLayout(this);
         recordContainer.setOrientation(LinearLayout.VERTICAL);
         root.addView(recordContainer);
@@ -1721,12 +1747,52 @@ public class MainActivity extends Activity {
         renderRecords("");
     }
 
+    /**
+     * One ordering option.
+     *
+     * Two small chips rather than a menu: there are only two orders worth
+     * having, and a menu would hide the one that is currently active.
+     */
+    private TextView sortChip(String label, final String mode) {
+        TextView chip = button(label, Theme.TEXT_ACCENT);
+        chip.setTextSize(Theme.SIZE_TINY);
+        chip.setMinHeight(0);
+        LinearLayout.LayoutParams params = weightedParams();
+        params.height = dp(32);
+        chip.setLayoutParams(params);
+        chip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                boolean byTime = SORT_TIME.equals(mode);
+                if (byTime == sortByTime) {
+                    return;
+                }
+                sortByTime = byTime;
+                prefs.edit().putString(KEY_SORT, mode).apply();
+                refreshSortChips();
+                renderRecords(currentQuery());
+            }
+        });
+        return chip;
+    }
+
+    /** Highlights whichever ordering is in effect, dimming the other. */
+    private void refreshSortChips() {
+        if (sortTimeChip == null || sortNameChip == null) {
+            return;
+        }
+        sortTimeChip.setTextColor(sortByTime ? Theme.TEXT_ACCENT : Theme.TEXT_MUTED);
+        sortNameChip.setTextColor(sortByTime ? Theme.TEXT_MUTED : Theme.TEXT_ACCENT);
+    }
+
     private void renderRecords(String query) {
         if (recordContainer == null) {
             return;
         }
         recordContainer.removeAllViews();
         List<Entry> all = Vault.entries();
+        sortEntries(all);
         String needle = query == null ? "" : query.trim().toLowerCase();
         int shown = 0;
         for (Entry entry : all) {
@@ -1739,6 +1805,40 @@ public class MainActivity extends Activity {
         }
         if (shown == 0) {
             recordContainer.addView(hint(all.isEmpty() ? "暂无记录" : "没有匹配的记录"));
+        }
+    }
+
+    /**
+     * Orders the list in place for display.
+     *
+     * Storage order is left alone: entries are appended when added, and
+     * reordering the file itself would make an export depend on whatever the
+     * user happened to be looking at. Sorting here keeps the persisted data
+     * stable and the visible order a pure presentation choice.
+     *
+     * Name order uses a Collator rather than String.compareTo so Chinese titles
+     * group by pronunciation. Codepoint order would scatter them by stroke
+     * shape, which is not how anyone reads a list.
+     */
+    private void sortEntries(List<Entry> list) {
+        if (sortByTime) {
+            java.util.Collections.sort(list, new java.util.Comparator<Entry>() {
+                @Override
+                public int compare(Entry a, Entry b) {
+                    // Newest first. updatedAt is the creation time until the entry
+                    // is edited, so a freshly saved record lands on top and a
+                    // record that was just changed surfaces the same way.
+                    return b.updatedAt < a.updatedAt ? -1 : (b.updatedAt > a.updatedAt ? 1 : 0);
+                }
+            });
+        } else {
+            final java.text.Collator collator = java.text.Collator.getInstance(java.util.Locale.CHINA);
+            java.util.Collections.sort(list, new java.util.Comparator<Entry>() {
+                @Override
+                public int compare(Entry a, Entry b) {
+                    return collator.compare(a.displayTitle(), b.displayTitle());
+                }
+            });
         }
     }
 
@@ -2055,10 +2155,37 @@ public class MainActivity extends Activity {
         return row;
     }
 
+    /**
+     * Import entry point, with the format spelled out.
+     *
+     * The old build printed a numbered guide next to the import button and this
+     * rewrite dropped it, which left the dialog saying only "pick a file or
+     * paste something" while offering no clue about what either route expected.
+     * The guide is back, listing the shapes the parser actually accepts.
+     */
     private void askImportLegacy() {
+        LinearLayout box = column();
+        box.setPadding(dp(20), 0, dp(20), dp(4));
+
+        TextView guide = new TextView(this);
+        guide.setText("支持以下格式，自动识别。内容较长时用“选择文件”更可靠。\n\n"
+                + "【明文 · 每行一条】\n"
+                + "格式：名称 → 密码 → 备注 → 标签\n"
+                + "❶ 用 Tab 分隔最稳妥，密码内含逗号也不会被切错\n"
+                + "❷ 也可用英文逗号或中文逗号分隔\n"
+                + "❸ 备注、标签可以省略，至少要填名称\n"
+                + "❹ 也可两行一组：第 1 行名称、第 2 行密码\n"
+                + "❺ 重复条目自动跳过\n\n"
+                + "【加密备份】\n"
+                + "❻ 粘贴导出的 .txt 全文，或直接选择该文件，自动识别");
+        guide.setTextColor(Theme.TEXT_SECONDARY);
+        guide.setTextSize(Theme.SIZE_SMALL);
+        guide.setLineSpacing(dp(4), 1f);
+        box.addView(guide);
+
         new AlertDialog.Builder(this)
                 .setTitle("导入数据")
-                .setMessage("选择导入方式。两种方式效果相同，文件方式更适合长内容。")
+                .setView(box)
                 .setPositiveButton("选择文件", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
