@@ -72,6 +72,9 @@ public class MainActivity extends Activity {
     private static final String KEY_PERIOD_ROLL = "period_roll";
     /** Grace period offered as an alternative to the default always-reask. */
     private static final String KEY_BG_GRACE = "bg_grace";
+
+    /** When on, copied passwords are left discoverable by the system. */
+    private static final String KEY_CLIP_HISTORY = "clip_history";
     private static final long BG_GRACE_MS = 30000L;
     /**
      * Shown on the about page.
@@ -2334,6 +2337,7 @@ public class MainActivity extends Activity {
         root.addView(space(6));
         addSpaced(root, buildBiometricRow());
         addSpaced(root, buildBackgroundRow());
+        addSpaced(root, buildClipboardRow());
         root.addView(space(6));
         root.addView(fullButton("立即锁定", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
@@ -2410,6 +2414,69 @@ public class MainActivity extends Activity {
      * people actually want when they glance at a message and come straight
      * back. Anything longer than the window still forces a re-ask.
      */
+    /**
+     * Whether copied passwords may be recorded by the system.
+     *
+     * Off by default. Someone who wants to paste a password on another device
+     * has a legitimate reason to turn this on, so it is a choice rather than a
+     * rule; the subtitle spells out what is being traded away.
+     */
+    private boolean allowClipHistory() {
+        return prefs.getBoolean(KEY_CLIP_HISTORY, false);
+    }
+
+    /**
+     * Lets the user opt the clipboard back into history and sync.
+     *
+     * Left as its own card rather than folded into the grace period row because
+     * the two have nothing to do with each other and a single mis-tap here has
+     * consequences the other does not.
+     */
+    private View buildClipboardRow() {
+        LinearLayout card = column();
+        card.setBackground(glassCard());
+        card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
+
+        LinearLayout head = row();
+        TextView label = new TextView(this);
+        label.setText("复制后允许系统记录");
+        label.setTextColor(Theme.TEXT_PRIMARY);
+        label.setTextSize(Theme.SIZE_BODY);
+        label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        head.addView(label);
+
+        final Switch toggle = new Switch(this);
+        toggle.setChecked(allowClipHistory());
+        head.addView(toggle);
+        card.addView(head);
+
+        final TextView note = new TextView(this);
+        note.setTextSize(Theme.SIZE_TINY);
+        note.setPadding(0, dp(6), 0, 0);
+        note.setLineSpacing(dp(3), 1f);
+        card.addView(note);
+        updateClipboardNote(note);
+
+        toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton button, boolean checked) {
+                prefs.edit().putBoolean(KEY_CLIP_HISTORY, checked).apply();
+                updateClipboardNote(note);
+            }
+        });
+        return card;
+    }
+
+    /** Says plainly what each state of the clipboard switch costs. */
+    private void updateClipboardNote(TextView note) {
+        boolean allow = allowClipHistory();
+        note.setText(allow
+                ? "开启：密码可粘贴到其他设备，但复制时系统提示会显示密码明文，且会进入剪贴板历史。"
+                : "关闭（默认）：密码不进入剪贴板历史，不跨设备同步，复制时系统提示也不显示明文。");
+        note.setTextColor(allow ? Theme.TEXT_DANGER : Theme.TEXT_MUTED);
+    }
+
     private View buildBackgroundRow() {
         LinearLayout row = row();
         row.setBackground(glassCard());
@@ -2786,6 +2853,13 @@ public class MainActivity extends Activity {
      */
     private ClipData sensitiveClip(String label, String value) {
         ClipData clip = ClipData.newPlainText(label, value);
+        if (allowClipHistory()) {
+            // The user asked for the password to travel. The system flag cannot
+            // be split: it governs the preview bubble, clipboard history and
+            // cross device sync together, so honouring this one request gives up
+            // all three. The settings screen says so in as many words.
+            return clip;
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             android.os.PersistableBundle extras = clip.getDescription().getExtras();
             if (extras != null) {
