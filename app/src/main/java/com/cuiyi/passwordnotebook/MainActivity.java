@@ -23,6 +23,7 @@ import android.view.ViewGroup;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -47,7 +48,9 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The single screen, hosting three tabs.
@@ -75,7 +78,21 @@ public class MainActivity extends Activity {
      * than Gradle, so there is no generated BuildConfig to read it from. Kept
      * next to the version passed to aapt2 link so the two stay in step.
      */
-    private static final String APP_VERSION = "6.7";
+    /**
+     * Version shown on the about screen.
+     *
+     * Read from the installed package rather than kept as a constant. The
+     * constant was a manual copy of the value passed to aapt2 and it silently
+     * drifted: the build was named 6.8 while this screen still said 6.7. The
+     * manifest already holds the authoritative number, so ask it.
+     */
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "未知";
+        }
+    }
 
     private static final String KEY_LENGTH = "length";
 
@@ -174,6 +191,19 @@ public class MainActivity extends Activity {
 
     private TextView sortTimeChip;
     private TextView sortNameChip;
+
+    private HorizontalScrollView tagFilterScroll;
+    private LinearLayout tagFilterStrip;
+
+    /**
+     * Tag currently narrowing the list, or null for every record.
+     *
+     * Deliberately not persisted. Reopening the app into a filtered list looks
+     * exactly like half the vault has vanished, which is the one scare a
+     * password manager must never produce. Scoped to the session, and the bar
+     * shows a lit pill whenever it is doing anything.
+     */
+    private String activeTag;
     /** Whether the weekly rollover selector is shown at all. */
     private boolean periodicRollEnabled;
 
@@ -1676,6 +1706,10 @@ public class MainActivity extends Activity {
         box.addView(title);
         box.addView(note);
         box.addView(tag);
+        View tagHints = tagSuggestions(tag);
+        if (tagHints != null) {
+            box.addView(tagHints);
+        }
         new AlertDialog.Builder(this)
                 .setTitle("保存密码")
                 .setView(box)
@@ -1739,6 +1773,17 @@ public class MainActivity extends Activity {
         root.addView(sortRow);
         refreshSortChips();
 
+        tagFilterScroll = new HorizontalScrollView(this);
+        tagFilterScroll.setHorizontalScrollBarEnabled(false);
+        tagFilterScroll.setVisibility(View.GONE);
+        LinearLayout.LayoutParams tagParams = new LinearLayout.LayoutParams(-1, -2);
+        tagParams.bottomMargin = dp(4);
+        tagFilterScroll.setLayoutParams(tagParams);
+        tagFilterStrip = row();
+        tagFilterStrip.setPadding(0, dp(2), 0, dp(2));
+        tagFilterScroll.addView(tagFilterStrip);
+        root.addView(tagFilterScroll);
+
         recordContainer = new LinearLayout(this);
         recordContainer.setOrientation(LinearLayout.VERTICAL);
         root.addView(recordContainer);
@@ -1791,11 +1836,15 @@ public class MainActivity extends Activity {
             return;
         }
         recordContainer.removeAllViews();
+        renderTagFilter();
         List<Entry> all = Vault.entries();
         sortEntries(all);
         String needle = query == null ? "" : query.trim().toLowerCase();
         int shown = 0;
         for (Entry entry : all) {
+            if (activeTag != null && !activeTag.equals(tagOf(entry))) {
+                continue;
+            }
             if (!needle.isEmpty() && !matches(entry, needle)) {
                 continue;
             }
@@ -1804,8 +1853,177 @@ public class MainActivity extends Activity {
             shown++;
         }
         if (shown == 0) {
-            recordContainer.addView(hint(all.isEmpty() ? "暂无记录" : "没有匹配的记录"));
+            String message;
+            if (all.isEmpty()) {
+                message = "暂无记录";
+            } else if (activeTag != null) {
+                // Say which filter is responsible. "没有匹配的记录" would send the
+                // user off to edit a search box that is already empty.
+                message = "「" + activeTag + "」下没有匹配的记录";
+            } else {
+                message = "没有匹配的记录";
+            }
+            recordContainer.addView(hint(message));
         }
+    }
+
+    /** Tag with surrounding blanks removed, or an empty string. Total by design. */
+    private String tagOf(Entry entry) {
+        return entry.tag == null ? "" : entry.tag.trim();
+    }
+
+    /**
+     * Every tag in use, most used first, then by pronunciation.
+     *
+     * Frequency rather than first appearance because the bar is scanned to find
+     * a handful of recurring buckets; ordering by insertion would shuffle the
+     * strip every time a new tag showed up. Ties fall back to a Collator so
+     * Chinese tags group by reading.
+     */
+    private List<String> knownTags(int limit) {
+        final Map<String, Integer> freq = new HashMap<String, Integer>();
+        for (Entry entry : Vault.entries()) {
+            String tag = tagOf(entry);
+            if (tag.isEmpty()) {
+                continue;
+            }
+            Integer count = freq.get(tag);
+            freq.put(tag, count == null ? Integer.valueOf(1) : Integer.valueOf(count.intValue() + 1));
+        }
+        List<String> tags = new ArrayList<String>(freq.keySet());
+        final java.text.Collator collator = java.text.Collator.getInstance(java.util.Locale.CHINA);
+        java.util.Collections.sort(tags, new java.util.Comparator<String>() {
+            @Override
+            public int compare(String a, String b) {
+                int diff = freq.get(b).intValue() - freq.get(a).intValue();
+                return diff != 0 ? diff : collator.compare(a, b);
+            }
+        });
+        if (tags.size() > limit) {
+            return new ArrayList<String>(tags.subList(0, limit));
+        }
+        return tags;
+    }
+
+    /**
+     * Rebuilds the filter strip from the tags currently in the vault.
+     *
+     * Hidden entirely when nothing is tagged: an always visible row holding
+     * only “全部” would be a permanent empty control on a vault that does not
+     * use tags at all.
+     */
+    private void renderTagFilter() {
+        if (tagFilterStrip == null || tagFilterScroll == null) {
+            return;
+        }
+        tagFilterStrip.removeAllViews();
+        List<String> tags = knownTags(Theme.MAX_TAG_CHIPS);
+        if (tags.isEmpty() && activeTag == null) {
+            tagFilterScroll.setVisibility(View.GONE);
+            return;
+        }
+        tagFilterScroll.setVisibility(View.VISIBLE);
+        tagFilterStrip.addView(tagFilterChip("全部", activeTag == null, null));
+        for (final String tag : tags) {
+            tagFilterStrip.addView(tagFilterChip(tag, tag.equals(activeTag), tag));
+        }
+        // The active tag may sit beyond the display cap (it was reached by
+        // tapping a record). Keep its pill visible so the filter can be undone
+        // from the strip rather than only from the record it came from.
+        if (activeTag != null && !tags.contains(activeTag)) {
+            tagFilterStrip.addView(tagFilterChip(activeTag, true, activeTag));
+        }
+    }
+
+    private TextView tagFilterChip(String label, boolean active, final String tag) {
+        return tagChip(label, active, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                if (tag == null ? activeTag == null : tag.equals(activeTag)) {
+                    return;
+                }
+                activeTag = tag;
+                renderRecords(currentQuery());
+            }
+        });
+    }
+
+    /**
+     * One tag pill.
+     *
+     * Shared by the filter strip, the record cards and the suggestion row so a
+     * tag looks the same everywhere it appears.
+     */
+    private TextView tagChip(String label, boolean active, View.OnClickListener listener) {
+        TextView chip = new TextView(this);
+        chip.setText(label);
+        chip.setTextColor(active ? Theme.TEXT_ACCENT : Theme.TEXT_SECONDARY);
+        chip.setTextSize(Theme.SIZE_TINY);
+        chip.setGravity(Gravity.CENTER);
+        chip.setPadding(dp(Theme.CHIP_PAD_H), dp(Theme.CHIP_PAD_V),
+                dp(Theme.CHIP_PAD_H), dp(Theme.CHIP_PAD_V));
+        chip.setBackground(chipBackground(active));
+        chip.setMinHeight(0);
+        chip.setClickable(listener != null);
+        chip.setOnClickListener(listener);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+        params.rightMargin = dp(Theme.CHIP_GAP);
+        chip.setLayoutParams(params);
+        return chip;
+    }
+
+    /**
+     * One scrolling row of tags already in use, offered under the tag field.
+     *
+     * Without this, tagging drifts into near-duplicates, because a blank field
+     * gives no clue what was used last time and a typo looks exactly like a new
+     * label. Tapping a suggestion fills the field.
+     *
+     * Returns null when nothing is tagged yet, so the dialog does not grow an
+     * empty shelf on the first save.
+     */
+    private View tagSuggestions(final EditText target) {
+        final List<String> tags = knownTags(Theme.MAX_TAG_SUGGESTIONS);
+        if (tags.isEmpty()) {
+            return null;
+        }
+        LinearLayout wrap = column();
+        wrap.setPadding(0, dp(9), 0, 0);
+
+        TextView label = new TextView(this);
+        label.setText("已有标签");
+        label.setTextColor(Theme.TEXT_MUTED);
+        label.setTextSize(Theme.SIZE_TINY);
+        label.setPadding(dp(2), 0, 0, dp(5));
+        wrap.addView(label);
+
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout strip = row();
+        for (final String tag : tags) {
+            strip.addView(tagChip(tag, false, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Animations.pressFeedback(v);
+                    target.setText(tag);
+                    target.setSelection(tag.length());
+                }
+            }));
+        }
+        scroll.addView(strip);
+        wrap.addView(scroll);
+        return wrap;
+    }
+
+    private GradientDrawable chipBackground(boolean active) {
+        android.graphics.drawable.GradientDrawable shape =
+                new android.graphics.drawable.GradientDrawable();
+        shape.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        shape.setCornerRadius(dp(Theme.RADIUS_CHIP));
+        shape.setColor(active ? Theme.TAG_FILL_ACTIVE : Theme.TAG_FILL);
+        shape.setStroke(dp(1), active ? Theme.TEXT_ACCENT : Theme.TAG_STROKE);
+        return shape;
     }
 
     /**
@@ -1858,32 +2076,60 @@ public class MainActivity extends Activity {
         card.setPadding(dp(14), dp(12), dp(14), dp(12));
         card.setClickable(true);
 
+        // Title and timestamp share a line. Stacking them separately made every
+        // card six rows tall, which pushed the password and the actions apart
+        // and made a short list feel like a wall.
+        LinearLayout head = row();
         TextView title = new TextView(this);
         title.setText(entry.displayTitle());
         title.setTextColor(Theme.TEXT_PRIMARY);
         title.setTextSize(Theme.SIZE_TITLE);
-        card.addView(title);
-
-        if (entry.tag != null && !entry.tag.isEmpty()) {
-            TextView tag = new TextView(this);
-            tag.setText(entry.tag);
-            tag.setTextColor(Theme.TEXT_ACCENT);
-            tag.setTextSize(Theme.SIZE_SMALL);
-            card.addView(tag);
-        }
-        if (entry.note != null && !entry.note.isEmpty()) {
-            TextView note = new TextView(this);
-            note.setText(entry.note);
-            note.setTextColor(Theme.TEXT_SECONDARY);
-            note.setTextSize(Theme.SIZE_SMALL);
-            card.addView(note);
-        }
+        title.setMaxLines(1);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        head.addView(title);
         if (entry.updatedAt > 0L) {
             TextView stamp = new TextView(this);
             stamp.setText(formatTime(entry.updatedAt));
             stamp.setTextColor(Theme.TEXT_MUTED);
             stamp.setTextSize(Theme.SIZE_TINY);
-            card.addView(stamp);
+            stamp.setPadding(dp(8), 0, 0, 0);
+            head.addView(stamp);
+        }
+        card.addView(head);
+
+        final String tagText = tagOf(entry);
+        boolean hasNote = entry.note != null && !entry.note.trim().isEmpty();
+        if (!tagText.isEmpty() || hasNote) {
+            LinearLayout meta = row();
+            meta.setPadding(0, dp(7), 0, 0);
+            if (!tagText.isEmpty()) {
+                // Tapping the pill narrows the list to its tag. The pill is the
+                // most direct place to ask the question, so the filter is
+                // reachable without hunting for the strip at the top.
+                TextView chip = tagChip(tagText, tagText.equals(activeTag), new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        Animations.pressFeedback(v);
+                        activeTag = tagText.equals(activeTag) ? null : tagText;
+                        renderRecords(currentQuery());
+                    }
+                });
+                meta.addView(chip);
+            }
+            if (hasNote) {
+                TextView note = new TextView(this);
+                note.setText(entry.note);
+                note.setTextColor(Theme.TEXT_SECONDARY);
+                note.setTextSize(Theme.SIZE_SMALL);
+                note.setMaxLines(1);
+                note.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                if (!tagText.isEmpty()) {
+                    note.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+                }
+                meta.addView(note);
+            }
+            card.addView(meta);
         }
 
         final TextView masked = new TextView(this);
@@ -1958,6 +2204,10 @@ public class MainActivity extends Activity {
         box.addView(password);
         box.addView(note);
         box.addView(tag);
+        View tagHints = tagSuggestions(tag);
+        if (tagHints != null) {
+            box.addView(tagHints);
+        }
 
         new AlertDialog.Builder(this)
                 .setTitle("编辑")
@@ -2065,7 +2315,7 @@ public class MainActivity extends Activity {
         }));
 
         root.addView(section("关于"));
-        root.addView(hint("密码小本 " + APP_VERSION + "\n\n"
+        root.addView(hint("密码小本 " + appVersion() + "\n\n"
                 + "数据使用 AES-256-GCM 加密，密钥由主密码通过 PBKDF2-HMAC-SHA256 派生，"
                 + "迭代次数按本机性能校准。主密码不保存，忘记则无法恢复。\n\n"
                 + "可重建密码的派生输入只有核心词、用途标识和周次，不含任何本机数据："

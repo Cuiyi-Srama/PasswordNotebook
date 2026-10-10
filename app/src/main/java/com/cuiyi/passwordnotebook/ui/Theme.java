@@ -76,6 +76,39 @@ public final class Theme {
     public static final int RADIUS_FIELD = 10;
     public static final int STROKE_WIDTH = 2;
 
+    // ---- tag chips ----
+
+    /**
+     * Tag pill colours.
+     *
+     * The tag used to be an unadorned line of text, which read as stray body
+     * copy rather than as a label, and gave no hint that it could be tapped to
+     * narrow the list. A filled pill with a border marks it as an object.
+     */
+    public static final int TAG_FILL = 0x2E00FF88;
+    /** Active filter pill: brighter fill, solid border. */
+    public static final int TAG_FILL_ACTIVE = 0x6600FF88;
+    /** Border of an inactive pill. */
+    public static final int TAG_STROKE = 0x5510C060;
+    public static final int RADIUS_CHIP = 999;
+    public static final int CHIP_PAD_H = 12;
+    public static final int CHIP_PAD_V = 5;
+    public static final int CHIP_GAP = 6;
+
+    /**
+     * How many tags the record filter bar shows before it stops.
+     *
+     * The bar scrolls, so the cap is not about fitting the row. It is about
+     * keeping the strip scannable: past roughly a dozen pills the eye stops
+     * reading it and starts hunting, at which point the search box is the
+     * better tool. Tags beyond the cap are still reachable by tapping the tag
+     * on a record that carries it.
+     */
+    public static final int MAX_TAG_CHIPS = 12;
+
+    /** Suggestions offered under the tag field when saving or editing. */
+    public static final int MAX_TAG_SUGGESTIONS = 8;
+
     // ---- text ----
 
     public static final int TEXT_PRIMARY = 0xFFD0FFD0;
