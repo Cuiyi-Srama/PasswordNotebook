@@ -66,29 +66,21 @@ public final class Backdrop {
     }
 
     /**
-     * Renders {@code rain} and {@code scrim} into one bitmap and blurs it.
+     * Renders the live backdrop layers into one bitmap and blurs it.
      *
      * @return false when the views have no size yet, which is normal on the
      *         first pass and simply means there is nothing to capture.
      */
-    public static boolean capture(View rain, View aurora, View scrim, int baseColor, float blurRadius) {
-        // Take the size from whichever layer has been laid out. The one that
-        // is hidden may never have been measured, and its zero would abort the
-        // capture even though the visible layer is perfectly fine.
-        View sized = null;
-        View[] candidates = {rain, aurora};
-        for (int i = 0; i < candidates.length; i++) {
-            View candidate = candidates[i];
-            if (candidate != null && candidate.getWidth() > 0 && candidate.getHeight() > 0) {
-                sized = candidate;
-                break;
-            }
-        }
-        if (sized == null) {
+    public static boolean capture(View sizedView, AuroraBackdrop aurora, View scrim, int baseColor, float blurRadius) {
+        // The rain view is the one layer with real geometry, so it is measured.
+        if (sizedView == null) {
             return false;
         }
-        int fullWidth = sized.getWidth();
-        int fullHeight = sized.getHeight();
+        int fullWidth = sizedView.getWidth();
+        int fullHeight = sizedView.getHeight();
+        if (fullWidth <= 0 || fullHeight <= 0) {
+            return false;
+        }
         int width = Math.max(1, Math.round(fullWidth * CAPTURE_SCALE));
         int height = Math.max(1, Math.round(fullHeight * CAPTURE_SCALE));
 
@@ -104,19 +96,20 @@ public final class Backdrop {
         Canvas canvas = new Canvas(raw);
         canvas.scale(CAPTURE_SCALE, CAPTURE_SCALE);
         int[] location = new int[2];
-        sized.getLocationInWindow(location);
+        sizedView.getLocationInWindow(location);
         originX = location[0];
         originY = location[1];
         captureScale = CAPTURE_SCALE;
 
         canvas.drawColor(baseColor);
-        // Draw only what is actually on screen. View.draw ignores visibility,
-        // so a hidden layer would otherwise leak into the glass.
-        if (rain != null && rain.getVisibility() == View.VISIBLE) {
-            rain.draw(canvas);
+        // View.draw ignores visibility, so a hidden layer would otherwise leak
+        // into the glass. The aurora is a renderer, not a view, and is skipped
+        // by the caller when the style does not want it.
+        if (sizedView != null && sizedView.getVisibility() == View.VISIBLE) {
+            sizedView.draw(canvas);
         }
-        if (aurora != null && aurora.getVisibility() == View.VISIBLE) {
-            aurora.draw(canvas);
+        if (aurora != null) {
+            aurora.draw(canvas, fullWidth, fullHeight);
         }
         if (scrim != null && scrim.getVisibility() == View.VISIBLE) {
             scrim.draw(canvas);

@@ -40,7 +40,7 @@ import com.cuiyi.passwordnotebook.gen.PasswordFactory;
 import com.cuiyi.passwordnotebook.ui.Animations;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory.BiometricPrompt;
-import com.cuiyi.passwordnotebook.ui.AuroraView;
+import com.cuiyi.passwordnotebook.ui.AuroraBackdrop;
 import com.cuiyi.passwordnotebook.ui.Backdrop;
 import com.cuiyi.passwordnotebook.ui.GlassCard;
 import com.cuiyi.passwordnotebook.ui.GlassDrawable;
@@ -135,8 +135,8 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private CyberRainView rain;
-    /** Colour field the glass style refracts. */
-    private AuroraView aurora;
+    /** Colour field the glass style refracts. Painted into the backdrop only. */
+    private AuroraBackdrop aurora;
 
     /** Dimming layer between the rain and the interface. */
     private View scrimLayer;
@@ -468,10 +468,11 @@ public class MainActivity extends Activity {
 
         // The glass style needs a backdrop with colour in it. Rain over black
         // blurs to nothing, which made every pane look like grey fog, so this
-        // style gets a soft field of blooms to refract instead.
-        aurora = new AuroraView(this);
-        aurora.setVisibility(View.GONE);
-        root.addView(aurora, new FrameLayout.LayoutParams(-1, -1));
+        // style gets a soft field of blooms instead. It is a renderer rather
+        // than a view: it is painted straight into the backdrop bitmap, so it
+        // is never on screen itself and cannot fall out of step with the copy
+        // the panes sample.
+        aurora = new AuroraBackdrop();
 
         // Created here but kept hidden until the app leaves the foreground. It
         // sits on top of the rain so nothing of the vault is visible in the
@@ -3273,9 +3274,7 @@ public class MainActivity extends Activity {
         if (rain != null) {
             rain.setVisibility(style == Theme.STYLE_CYBER ? View.VISIBLE : View.GONE);
         }
-        if (aurora != null) {
-            aurora.setVisibility(style == Theme.STYLE_GLASS ? View.VISIBLE : View.GONE);
-        }
+
         GlassPainter.resetShader();
         if (style == Theme.STYLE_GLASS) {
             startBackdropCapture();
@@ -3317,29 +3316,20 @@ public class MainActivity extends Activity {
     };
 
     private void refreshBackdrop() {
-        // Which layer is live depends on the style, and the inactive one may
-        // never have been measured at all (it went GONE before the first
-        // layout), so its width reads zero forever. Asking the wrong layer for
-        // its size silently disabled the whole refresh loop: the timer kept
-        // running and kept returning on the first line.
-        View live = null;
-        if (aurora != null && aurora.getVisibility() == View.VISIBLE) {
-            live = aurora;
-            aurora.advance();
-        } else if (rain != null && rain.getVisibility() == View.VISIBLE) {
-            live = rain;
-        }
-        if (live == null || live.getWidth() <= 0 || live.getHeight() <= 0) {
+        // The rain is the only backdrop that is also a view, so it is the one
+        // to measure. The aurora is painted straight into the bitmap and needs
+        // no layout of its own.
+        if (rain == null || rain.getWidth() <= 0 || rain.getHeight() <= 0) {
             return;
         }
-        if (Backdrop.capture(rain, aurora, scrimLayer, Theme.BG_DEEP, dp(Theme.GLASS_BLUR_DP))) {
+        AuroraBackdrop field = style == Theme.STYLE_GLASS ? aurora : null;
+        if (Backdrop.capture(rain, field, scrimLayer, Theme.BG_DEEP, dp(Theme.GLASS_BLUR_DP))) {
             // The panes have to be invalidated one by one. Invalidating their
             // parent is not enough: an unchanged display list is reused and
             // onDraw never runs again, which left the rain frozen in the glass.
             GlassCard.invalidateAll();
         }
     }
-
     /** Style picker: one chip per look. */
     private View buildStyleRow() {
         LinearLayout card = cardColumn(LinearLayout.VERTICAL);
