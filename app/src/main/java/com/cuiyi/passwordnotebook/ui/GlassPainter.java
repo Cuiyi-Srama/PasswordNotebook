@@ -38,21 +38,13 @@ public final class GlassPainter {
 
             + "uniform float2 uSize;\n"
 
-            + "uniform float uRadius;\n"
+            + "uniform float uBand;\n"
 
-            + "uniform float uThickness;\n"
+            + "uniform float uStrength;\n"
 
             + "uniform float uTint;\n"
 
             + "uniform float3 uTintColor;\n"
-
-            + "float sdRoundRect(float2 p, float2 b, float r) {\n"
-
-            + "    float2 q = abs(p) - b + r;\n"
-
-            + "    return length(max(q, float2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;\n"
-
-            + "}\n"
 
             + "half4 main(float2 coord) {\n"
 
@@ -60,27 +52,29 @@ public final class GlassPainter {
 
             + "    float2 p = coord - halfSize;\n"
 
-            + "    float d = sdRoundRect(p, halfSize, uRadius);\n"
+            + "    float2 n = p / halfSize;\n"
 
-            + "    float dx = sdRoundRect(p + float2(1.0, 0.0), halfSize, uRadius) - d;\n"
+            + "    float r = length(n);\n"
 
-            + "    float dy = sdRoundRect(p + float2(0.0, 1.0), halfSize, uRadius) - d;\n"
+            + "    float2 dir = normalize(p + float2(0.0001, 0.0001));\n"
 
-            + "    float2 n = normalize(float2(dx, dy) + float2(0.0001, 0.0001));\n"
+            + "    float band = smoothstep(1.0 - uBand, 1.0, r);\n"
 
-            + "    float band = 1.0 - smoothstep(0.0, uThickness, -d);\n"
+            + "    float2 disp = dir * band * uStrength;\n"
 
-            + "    float2 offset = n * band * uThickness * 0.45;\n"
+            + "    float4 col;\n"
 
-            + "    float4 col = float4(uBackdrop.eval(uOffset + coord + offset));\n"
+            + "    col.r = uBackdrop.eval(uOffset + coord + disp * 1.00).r;\n"
+
+            + "    col.g = uBackdrop.eval(uOffset + coord + disp * 0.97).g;\n"
+
+            + "    col.b = uBackdrop.eval(uOffset + coord + disp * 0.94).b;\n"
+
+            + "    col.a = 1.0;\n"
 
             + "    col.rgb = mix(col.rgb, uTintColor, uTint);\n"
 
-            + "    float rim = (1.0 - smoothstep(0.0, uThickness * 0.55, -d)) * step(-uThickness, d);\n"
-
-            + "    col.rgb += float3(1.0, 1.0, 1.0) * rim * 0.20;\n"
-
-            + "    col.a = 1.0;\n"
+            + "    col.rgb += float3(1.0, 1.0, 1.0) * smoothstep(0.55, 1.0, band) * 0.22;\n"
 
             + "    return half4(col);\n"
 
@@ -138,8 +132,12 @@ public final class GlassPainter {
             if (shader != null) {
                 shader.setFloatUniform("uOffset", offsetX, offsetY);
                 shader.setFloatUniform("uSize", oval.width(), oval.height());
-                shader.setFloatUniform("uRadius", radiusPx);
-                shader.setFloatUniform("uThickness", thicknessPx);
+                // Refraction lives in a band just inside the edge. Past that
+                // the pane is a plain window, which is what makes real liquid
+                // glass look clear in the middle instead of fogged all over.
+                shader.setFloatUniform("uBand", 0.42f);
+                shader.setFloatUniform("uStrength",
+                        Math.min(oval.width(), oval.height()) * 0.07f);
                 shader.setFloatUniform("uTint", tintAmount);
                 shader.setFloatUniform("uTintColor",
                         ((tintColor >> 16) & 0xFF) / 255f,

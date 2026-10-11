@@ -44,11 +44,17 @@ public class GlassDrawable extends Drawable {
         this.tintAmount = tintAmount;
     }
 
-    /** Repaints every glass button. Called alongside GlassCard.invalidateAll. */
+    /**
+     * Deliberately does nothing.
+     *
+     * Buttons used to repaint on every backdrop tick, which meant rebuilding a
+     * display list for every button several times a second. With a few dozen
+     * of them that is what made the glass style feel heavy. A button is small
+     * enough that nobody can tell its backdrop is a fraction of a second older
+     * than the cards, so the whole tree repaint is skipped and the drawable
+     * refreshes itself when its bounds change.
+     */
     public static void invalidateAll() {
-        for (int i = 0; i < LIVE.size(); i++) {
-            LIVE.get(i).invalidateSelf();
-        }
     }
 
     @Override

@@ -101,31 +101,32 @@ public final class Theme {
      * they were handed, so callers must rebuild the page afterwards: the
      * settings picker does exactly that.
      *
-     * MINIMAL is deliberately monochrome. Dropping the animation alone still
-     * left a screen full of green, which is not what minimal means.
+     * MINIMAL is a graphite blue: quiet, low contrast, but not literally grey.
+     * Pure black and white reads as unfinished rather than calm, so the base
+     * is a deep blue grey and the accent is a muted steel blue.
      */
     public static void useStyle(int style) {
         if (style == STYLE_MINIMAL) {
-            BG_DEEP = 0xFF000000;
-            SCANLINE = 0x11FFFFFF;
-            SCRIM = 0xC0000000;
-            SCRIM_STRONG = 0xE6000000;
-            SURFACE = 0xF2141414;
-            SURFACE_STRONG = 0xFA0A0A0A;
+            BG_DEEP = 0xFF0B0D11;
+            SCANLINE = 0x0CFFFFFF;
+            SCRIM = 0xB80B0D11;
+            SCRIM_STRONG = 0xE00B0D11;
+            SURFACE = 0xF2171A20;
+            SURFACE_STRONG = 0xFA0D1014;
             FIELD = 0x1FFFFFFF;
-            SURFACE_STROKE = 0x33FFFFFF;
-            TEXT_PRIMARY = 0xFFF5F5F5;
-            TEXT_SECONDARY = 0xFF9E9E9E;
-            TEXT_ACCENT = 0xFFFFFFFF;
-            TEXT_DANGER = 0xFFFF8A8A;
-            TEXT_MUTED = 0xFF6E6E6E;
-            BUTTON_BG = 0xFF1F1F1F;
-            BUTTON_BG_DANGER = 0xFF2A1A1A;
-            BUTTON_PRIMARY = 0xFF3A3A3A;
-            TAG_FILL = 0x2EFFFFFF;
-            TAG_FILL_ACTIVE = 0x66FFFFFF;
-            TAG_STROKE = 0x55FFFFFF;
-            GLASS_TINT_COLOR = 0xFFE8E8E8;
+            SURFACE_STROKE = 0x1FFFFFFF;
+            TEXT_PRIMARY = 0xFFE3E6EB;
+            TEXT_SECONDARY = 0xFF9BA3AE;
+            TEXT_ACCENT = 0xFF8AB4E8;
+            TEXT_DANGER = 0xFFD48A8A;
+            TEXT_MUTED = 0xFF6B7280;
+            BUTTON_BG = 0xFF1C2027;
+            BUTTON_BG_DANGER = 0xFF2A1B1E;
+            BUTTON_PRIMARY = 0xFF2A3542;
+            TAG_FILL = 0x1F8AB4E8;
+            TAG_FILL_ACTIVE = 0x4D8AB4E8;
+            TAG_STROKE = 0x338AB4E8;
+            GLASS_TINT_COLOR = 0xFFBFD4E8;
             return;
         }
         BG_DEEP = CYBER_BG_DEEP;
@@ -274,7 +275,7 @@ public final class Theme {
 
     public static int BUTTON_BG = 0xFF1A3A2A;
     /** Minimal style: a flat grey panel instead of a tinted one. */
-    public static final int BUTTON_BG_MINIMAL = 0xFF1F1F1F;
+    public static final int BUTTON_BG_MINIMAL = 0xFF1C2027;
     public static int BUTTON_BG_DANGER = 0xFF3A1A1A;
     public static int BUTTON_PRIMARY = 0xFF1A5A3A;
 
