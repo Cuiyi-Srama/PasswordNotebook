@@ -74,7 +74,7 @@ public final class GlassPainter {
 
             + "    col.rgb = mix(col.rgb, uTintColor, uTint);\n"
 
-            + "    col.rgb += float3(1.0, 1.0, 1.0) * smoothstep(0.55, 1.0, band) * 0.22;\n"
+            + "    col.rgb += float3(1.0, 1.0, 1.0) * smoothstep(0.70, 1.0, band) * 0.07;\n"
 
             + "    return half4(col);\n"
 
@@ -137,7 +137,7 @@ public final class GlassPainter {
                 // glass look clear in the middle instead of fogged all over.
                 shader.setFloatUniform("uBand", 0.42f);
                 shader.setFloatUniform("uStrength",
-                        Math.min(oval.width(), oval.height()) * 0.07f);
+                        Math.min(oval.width(), oval.height()) * 0.05f);
                 shader.setFloatUniform("uTint", tintAmount);
                 shader.setFloatUniform("uTintColor",
                         ((tintColor >> 16) & 0xFF) / 255f,

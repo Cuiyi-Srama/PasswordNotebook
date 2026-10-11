@@ -40,6 +40,7 @@ import com.cuiyi.passwordnotebook.gen.PasswordFactory;
 import com.cuiyi.passwordnotebook.ui.Animations;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory.BiometricPrompt;
+import com.cuiyi.passwordnotebook.ui.AuroraView;
 import com.cuiyi.passwordnotebook.ui.Backdrop;
 import com.cuiyi.passwordnotebook.ui.GlassCard;
 import com.cuiyi.passwordnotebook.ui.GlassDrawable;
@@ -86,6 +87,9 @@ public class MainActivity extends Activity {
 
     /** Which interface style is selected. */
     private static final String KEY_STYLE = "style";
+
+    /** Whether screen capture is permitted. Off by default. */
+    private static final String KEY_ALLOW_SCREENSHOT = "allow_screenshot";
     private static final long BG_GRACE_MS = 30000L;
     /**
      * Shown on the about page.
@@ -131,6 +135,9 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
     private CyberRainView rain;
+    /** Colour field the glass style refracts. */
+    private AuroraView aurora;
+
     /** Dimming layer between the rain and the interface. */
     private View scrimLayer;
     /** Blank layer shown over everything while the app is backgrounded. */
@@ -246,13 +253,13 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // Blocks screenshots, screen recording and the thumbnail the system
-        // keeps for the recents screen. Without it the vault contents are one
-        // hardware-button press away from being copied out of the device.
-        getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE,
-                WindowManager.LayoutParams.FLAG_SECURE);
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        // Screenshot blocking is a setting, not a law. On by default, because a
+        // password list is exactly what a screen capture should not pick up,
+        // but it also stops the owner from showing anyone what the interface
+        // looks like, which is reason enough to make it switchable.
+        applySecureFlag();
         periodicRollEnabled = prefs.getBoolean(KEY_PERIOD_ROLL, false);
         randomSiteSalt = prefs.getBoolean(KEY_RANDOM_SALT, false);
         style = prefs.getInt(KEY_STYLE, Theme.STYLE_DEFAULT);
@@ -458,6 +465,13 @@ public class MainActivity extends Activity {
 
         rain = new CyberRainView(this);
         root.addView(rain, new FrameLayout.LayoutParams(-1, -1));
+
+        // The glass style needs a backdrop with colour in it. Rain over black
+        // blurs to nothing, which made every pane look like grey fog, so this
+        // style gets a soft field of blooms to refract instead.
+        aurora = new AuroraView(this);
+        aurora.setVisibility(View.GONE);
+        root.addView(aurora, new FrameLayout.LayoutParams(-1, -1));
 
         // Created here but kept hidden until the app leaves the foreground. It
         // sits on top of the rain so nothing of the vault is visible in the
@@ -2397,6 +2411,7 @@ public class MainActivity extends Activity {
         addSpaced(root, buildBiometricRow());
         addSpaced(root, buildBackgroundRow());
         addSpaced(root, buildClipboardRow());
+        addSpaced(root, buildScreenshotRow());
         root.addView(space(6));
         root.addView(fullButton("立即锁定", Theme.TEXT_ACCENT, new View.OnClickListener() {
             @Override
@@ -2485,6 +2500,71 @@ public class MainActivity extends Activity {
      */
     private boolean allowClipHistory() {
         return prefs.getBoolean(KEY_CLIP_HISTORY, false);
+    }
+
+    /**
+     * Applies the screenshot preference to the window.
+     *
+     * FLAG_SECURE does three things at once: it blocks screenshots, blocks
+     * screen recording, and hides the vault from the recents thumbnail. All
+     * three are wanted by default and all three disappear together, because
+     * the platform does not offer them separately.
+     */
+    private void applySecureFlag() {
+        boolean allow = prefs.getBoolean(KEY_ALLOW_SCREENSHOT, false);
+        if (allow) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        } else {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE,
+                    WindowManager.LayoutParams.FLAG_SECURE);
+        }
+    }
+
+    /** Screenshot permission, with the cost spelled out. */
+    private View buildScreenshotRow() {
+        LinearLayout card = cardColumn(LinearLayout.VERTICAL);
+        card.setPadding(dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S),
+                dp(Theme.PAD_CARD_H), dp(Theme.SPACE_S));
+
+        LinearLayout head = row();
+        TextView label = new TextView(this);
+        label.setText("允许截屏");
+        label.setTextColor(Theme.TEXT_PRIMARY);
+        label.setTextSize(Theme.SIZE_BODY);
+        label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        head.addView(label);
+
+        final Switch toggle = new Switch(this);
+        toggle.setChecked(prefs.getBoolean(KEY_ALLOW_SCREENSHOT, false));
+        head.addView(toggle);
+        card.addView(head);
+
+        final TextView note = new TextView(this);
+        note.setTextSize(Theme.SIZE_TINY);
+        note.setPadding(0, dp(6), 0, 0);
+        note.setLineSpacing(dp(3), 1f);
+        card.addView(note);
+        updateScreenshotNote(note, toggle.isChecked());
+
+        toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton button, boolean checked) {
+                prefs.edit().putBoolean(KEY_ALLOW_SCREENSHOT, checked).apply();
+                applySecureFlag();
+                updateScreenshotNote(note, checked);
+            }
+        });
+        return card;
+    }
+
+    private void updateScreenshotNote(TextView note, boolean allowed) {
+        if (allowed) {
+            note.setText("已允许截屏和录屏，最近任务里也会显示界面预览。截图可能被相册、云备份或其他应用读到，看完记得关掉。");
+            note.setTextColor(Theme.TEXT_DANGER);
+            return;
+        }
+        note.setText("默认关闭：无法截图、无法录屏，最近任务里也不显示界面预览。");
+        note.setTextColor(Theme.TEXT_MUTED);
     }
 
     private View buildClipboardRow() {
@@ -3188,8 +3268,13 @@ public class MainActivity extends Activity {
      * selected, so the other two styles pay nothing for it.
      */
     private void applyStyle() {
+        // Exactly one backdrop per style, never two: the capture would
+        // otherwise stack them and the glass would show the wrong colours.
         if (rain != null) {
-            rain.setVisibility(style == Theme.STYLE_MINIMAL ? View.GONE : View.VISIBLE);
+            rain.setVisibility(style == Theme.STYLE_CYBER ? View.VISIBLE : View.GONE);
+        }
+        if (aurora != null) {
+            aurora.setVisibility(style == Theme.STYLE_GLASS ? View.VISIBLE : View.GONE);
         }
         GlassPainter.resetShader();
         if (style == Theme.STYLE_GLASS) {
@@ -3235,7 +3320,10 @@ public class MainActivity extends Activity {
         if (rain == null || rain.getWidth() <= 0) {
             return;
         }
-        if (Backdrop.capture(rain, scrimLayer, Theme.BG_DEEP, dp(Theme.GLASS_BLUR_DP))) {
+        if (aurora != null && aurora.getVisibility() == View.VISIBLE) {
+            aurora.advance();
+        }
+        if (Backdrop.capture(rain, aurora, scrimLayer, Theme.BG_DEEP, dp(Theme.GLASS_BLUR_DP))) {
             // The panes have to be invalidated one by one. Invalidating their
             // parent is not enough: an unchanged display list is reused and
             // onDraw never runs again, which left the rain frozen in the glass.
@@ -3325,14 +3413,17 @@ public class MainActivity extends Activity {
      * returns the drawable interface rather than a gradient.
      */
     private android.graphics.drawable.Drawable buttonBackground() {
-        if (style == Theme.STYLE_GLASS) {
-            return new GlassDrawable(getResources().getDisplayMetrics().density,
-                    Theme.RADIUS_CARD, Theme.GLASS_THICKNESS_DP,
-                    Theme.GLASS_TINT_COLOR, Theme.GLASS_TINT);
-        }
         GradientDrawable drawable = new GradientDrawable();
         drawable.setShape(GradientDrawable.RECTANGLE);
         drawable.setCornerRadius(dp(Theme.RADIUS_CARD));
+        if (style == Theme.STYLE_GLASS) {
+            // On a glass card a button reads as part of the same material with
+            // a flat translucent fill. Giving it its own pane made it pale and
+            // added a second layer of noise on top of the card.
+            drawable.setColor(Theme.SURFACE_ON_GLASS);
+            drawable.setStroke(0, 0);
+            return drawable;
+        }
         drawable.setColor(style == Theme.STYLE_MINIMAL
                 ? Theme.BUTTON_BG_MINIMAL : Theme.BUTTON_BG);
         drawable.setStroke(dp(Theme.STROKE_WIDTH), Theme.SURFACE_STROKE);

@@ -71,7 +71,7 @@ public final class Backdrop {
      * @return false when the views have no size yet, which is normal on the
      *         first pass and simply means there is nothing to capture.
      */
-    public static boolean capture(View rain, View scrim, int baseColor, float blurRadius) {
+    public static boolean capture(View rain, View aurora, View scrim, int baseColor, float blurRadius) {
         if (rain == null) {
             return false;
         }
@@ -101,7 +101,14 @@ public final class Backdrop {
         captureScale = CAPTURE_SCALE;
 
         canvas.drawColor(baseColor);
-        rain.draw(canvas);
+        // Draw only what is actually on screen. View.draw ignores visibility,
+        // so a hidden layer would otherwise leak into the glass.
+        if (rain != null && rain.getVisibility() == View.VISIBLE) {
+            rain.draw(canvas);
+        }
+        if (aurora != null && aurora.getVisibility() == View.VISIBLE) {
+            aurora.draw(canvas);
+        }
         if (scrim != null && scrim.getVisibility() == View.VISIBLE) {
             scrim.draw(canvas);
         }

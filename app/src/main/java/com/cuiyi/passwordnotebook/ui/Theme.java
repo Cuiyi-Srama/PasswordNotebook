@@ -171,7 +171,17 @@ public final class Theme {
     /** Glass: how far the blur reaches, and how much colour is mixed in. */
     public static final int GLASS_BLUR_DP = 18;
     public static final int GLASS_THICKNESS_DP = 16;
-    public static final float GLASS_TINT = 0.12f;
+    /**
+     * Fill for small controls in the glass style.
+     *
+     * Buttons do not get the pane treatment. They are small enough that the
+     * refraction band covers the whole shape, which turned them into pale
+     * lozenges rather than glass, and stacking them on glass cards doubled
+     * the visual noise. A plain translucent fill reads as part of the same
+     * material without any of that.
+     */
+    public static final int SURFACE_ON_GLASS = 0x33FFFFFF;
+    public static final float GLASS_TINT = 0.04f;
     public static int GLASS_TINT_COLOR = 0xFF7FFFD8;
 
     // ---- glassmorphism ----
