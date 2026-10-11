@@ -25,11 +25,13 @@ import android.view.View;
 public final class GlassPainter {
 
     /**
-     * Samples the backdrop with a rounded rectangle distance field.
+     * Magnifies the backdrop near the edges, like a lens.
      *
-     * <p>Takes the gradient of the field as an outward normal and pulls the
-     * sample coordinate inward by an amount that grows towards the edge, so the
-     * border bends light the way a real pane does.
+     * Ported from the reference implementation of this effect: the sample
+     * coordinate is scaled towards the centre by an amount that grows near the
+     * edge, so the middle of the pane shows the backdrop unchanged while the
+     * border shows it enlarged. That inward pull is what reads as refraction; a
+     * plain sideways shift only looks like the image has been torn.
      */
     private static final String AGSL =
             "uniform shader uBackdrop;\n"
@@ -38,13 +40,33 @@ public final class GlassPainter {
 
             + "uniform float2 uSize;\n"
 
-            + "uniform float uBand;\n"
+            + "uniform float uDepth;\n"
 
             + "uniform float uStrength;\n"
 
-            + "uniform float uTint;\n"
+            + "uniform float uAberration;\n"
+
+            + "uniform float uExposure;\n"
 
             + "uniform float3 uTintColor;\n"
+
+            + "uniform float uTint;\n"
+
+            + "float sdRoundRect(float2 p, float2 halfSize, float r) {\n"
+
+            + "    float2 q = abs(p) - halfSize + r;\n"
+
+            + "    return min(max(q.x, q.y), 0.0) + length(max(q, float2(0.0, 0.0))) - r;\n"
+
+            + "}\n"
+
+            + "float smoothStep(float a, float b, float t) {\n"
+
+            + "    t = clamp((t - a) / (b - a), 0.0, 1.0);\n"
+
+            + "    return t * t * (3.0 - 2.0 * t);\n"
+
+            + "}\n"
 
             + "half4 main(float2 coord) {\n"
 
@@ -52,29 +74,39 @@ public final class GlassPainter {
 
             + "    float2 p = coord - halfSize;\n"
 
-            + "    float2 n = p / halfSize;\n"
+            + "    // Distance to the rounded edge, in pixels. Negative inside.\n"
 
-            + "    float r = length(n);\n"
+            + "    float d = sdRoundRect(p, halfSize, min(halfSize.x, halfSize.y));\n"
 
-            + "    float2 dir = normalize(p + float2(0.0001, 0.0001));\n"
+            + "    // Zero in the middle, one at the edge. uDepth sets how wide the band is.\n"
 
-            + "    float band = smoothstep(1.0 - uBand, 1.0, r);\n"
+            + "    float edge = smoothStep(uDepth, 0.0, d);\n"
 
-            + "    float2 disp = dir * band * uStrength;\n"
+            + "    // Scale below one pulls the sample towards the centre, which magnifies.\n"
+
+            + "    float scale = mix(1.0, uStrength, edge);\n"
+
+            + "    float2 offset = uOffset + halfSize + p * scale;\n"
+
+            + "    float ca = uAberration * edge;\n"
 
             + "    float4 col;\n"
 
-            + "    col.r = uBackdrop.eval(uOffset + coord + disp * 1.00).r;\n"
+            + "    col.r = uBackdrop.eval(offset * (1.0 + ca)).r;\n"
 
-            + "    col.g = uBackdrop.eval(uOffset + coord + disp * 0.97).g;\n"
+            + "    col.g = uBackdrop.eval(offset).g;\n"
 
-            + "    col.b = uBackdrop.eval(uOffset + coord + disp * 0.94).b;\n"
+            + "    col.b = uBackdrop.eval(offset * (1.0 - ca)).b;\n"
 
             + "    col.a = 1.0;\n"
 
-            + "    col.rgb = mix(col.rgb, uTintColor, uTint);\n"
+            + "    // Lifting the whole pane rather than drawing a rim: a lit band around the\n"
 
-            + "    col.rgb += float3(1.0, 1.0, 1.0) * smoothstep(0.70, 1.0, band) * 0.07;\n"
+            + "    // border is what made the first attempt look like painted plastic.\n"
+
+            + "    col.rgb = col.rgb * uExposure;\n"
+
+            + "    col.rgb = mix(col.rgb, uTintColor, uTint * edge);\n"
 
             + "    return half4(col);\n"
 
@@ -130,15 +162,18 @@ public final class GlassPainter {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !shaderUnusable) {
             RuntimeShader shader = obtainShader(backdrop);
             if (shader != null) {
+                float minSide = Math.min(oval.width(), oval.height());
                 shader.setFloatUniform("uOffset", offsetX, offsetY);
                 shader.setFloatUniform("uSize", oval.width(), oval.height());
-                // Refraction lives in a band just inside the edge. Past that
-                // the pane is a plain window, which is what makes real liquid
-                // glass look clear in the middle instead of fogged all over.
-                shader.setFloatUniform("uBand", 0.42f);
-                shader.setFloatUniform("uStrength",
-                        Math.min(oval.width(), oval.height()) * 0.05f);
-                shader.setFloatUniform("uTint", tintAmount);
+                // How far in from the edge the glass starts bending, and how
+                // much it magnifies there. Ported from the reference
+                // implementation, where the same two numbers are expressed as
+                // a fraction of the shape.
+                shader.setFloatUniform("uDepth", minSide * 0.33f);
+                shader.setFloatUniform("uStrength", 0.86f);
+                shader.setFloatUniform("uAberration", 0.006f);
+                shader.setFloatUniform("uExposure", 1.06f);
+                shader.setFloatUniform("uTint", 0.05f);
                 shader.setFloatUniform("uTintColor",
                         ((tintColor >> 16) & 0xFF) / 255f,
                         ((tintColor >> 8) & 0xFF) / 255f,
