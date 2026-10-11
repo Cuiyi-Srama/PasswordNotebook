@@ -3221,7 +3221,7 @@ public class MainActivity extends Activity {
     }
 
     /** How often the glass backdrop is recaptured, in milliseconds. */
-    private static final long CAPTURE_INTERVAL_MS = 200L;
+    private static final long CAPTURE_INTERVAL_MS = 130L;
 
     /**
      * A card container in the current style.
@@ -3317,11 +3317,20 @@ public class MainActivity extends Activity {
     };
 
     private void refreshBackdrop() {
-        if (rain == null || rain.getWidth() <= 0) {
-            return;
-        }
+        // Which layer is live depends on the style, and the inactive one may
+        // never have been measured at all (it went GONE before the first
+        // layout), so its width reads zero forever. Asking the wrong layer for
+        // its size silently disabled the whole refresh loop: the timer kept
+        // running and kept returning on the first line.
+        View live = null;
         if (aurora != null && aurora.getVisibility() == View.VISIBLE) {
+            live = aurora;
             aurora.advance();
+        } else if (rain != null && rain.getVisibility() == View.VISIBLE) {
+            live = rain;
+        }
+        if (live == null || live.getWidth() <= 0 || live.getHeight() <= 0) {
+            return;
         }
         if (Backdrop.capture(rain, aurora, scrimLayer, Theme.BG_DEEP, dp(Theme.GLASS_BLUR_DP))) {
             // The panes have to be invalidated one by one. Invalidating their

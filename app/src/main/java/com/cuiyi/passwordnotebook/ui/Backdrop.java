@@ -72,14 +72,23 @@ public final class Backdrop {
      *         first pass and simply means there is nothing to capture.
      */
     public static boolean capture(View rain, View aurora, View scrim, int baseColor, float blurRadius) {
-        if (rain == null) {
+        // Take the size from whichever layer has been laid out. The one that
+        // is hidden may never have been measured, and its zero would abort the
+        // capture even though the visible layer is perfectly fine.
+        View sized = null;
+        View[] candidates = {rain, aurora};
+        for (int i = 0; i < candidates.length; i++) {
+            View candidate = candidates[i];
+            if (candidate != null && candidate.getWidth() > 0 && candidate.getHeight() > 0) {
+                sized = candidate;
+                break;
+            }
+        }
+        if (sized == null) {
             return false;
         }
-        int fullWidth = rain.getWidth();
-        int fullHeight = rain.getHeight();
-        if (fullWidth <= 0 || fullHeight <= 0) {
-            return false;
-        }
+        int fullWidth = sized.getWidth();
+        int fullHeight = sized.getHeight();
         int width = Math.max(1, Math.round(fullWidth * CAPTURE_SCALE));
         int height = Math.max(1, Math.round(fullHeight * CAPTURE_SCALE));
 
@@ -95,7 +104,7 @@ public final class Backdrop {
         Canvas canvas = new Canvas(raw);
         canvas.scale(CAPTURE_SCALE, CAPTURE_SCALE);
         int[] location = new int[2];
-        rain.getLocationInWindow(location);
+        sized.getLocationInWindow(location);
         originX = location[0];
         originY = location[1];
         captureScale = CAPTURE_SCALE;

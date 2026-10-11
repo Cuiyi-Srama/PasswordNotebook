@@ -53,7 +53,7 @@ public class AuroraView extends View {
 
     /** Drifts the blooms. Called from the backdrop timer, not per frame. */
     public void advance() {
-        phase += 0.035f;
+        phase += 0.09f;
         if (phase > 6.2831855f) {
             phase -= 6.2831855f;
         }
