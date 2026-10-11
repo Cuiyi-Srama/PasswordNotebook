@@ -42,6 +42,8 @@ import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory;
 import com.cuiyi.passwordnotebook.ui.BiometricPromptFactory.BiometricPrompt;
 import com.cuiyi.passwordnotebook.ui.Backdrop;
 import com.cuiyi.passwordnotebook.ui.GlassCard;
+import com.cuiyi.passwordnotebook.ui.GlassDrawable;
+import com.cuiyi.passwordnotebook.ui.GlassPainter;
 import com.cuiyi.passwordnotebook.ui.CyberRainView;
 import com.cuiyi.passwordnotebook.ui.FilePicker;
 import com.cuiyi.passwordnotebook.ui.FileSaver;
@@ -254,6 +256,9 @@ public class MainActivity extends Activity {
         periodicRollEnabled = prefs.getBoolean(KEY_PERIOD_ROLL, false);
         randomSiteSalt = prefs.getBoolean(KEY_RANDOM_SALT, false);
         style = prefs.getInt(KEY_STYLE, Theme.STYLE_DEFAULT);
+        // Before any view is built: the palette has to be in place, because
+        // each view copies the colours it is given at construction time.
+        Theme.useStyle(style);
         glassBlurIndex = prefs.getInt(KEY_GLASS_BLUR, Theme.GLASS_BLUR_DEFAULT);
         sortByTime = !SORT_NAME.equals(prefs.getString(KEY_SORT, SORT_TIME));
         // The length was written to preferences on every drag but never read
@@ -1099,12 +1104,12 @@ public class MainActivity extends Activity {
         view.setTextSize(Theme.SIZE_TINY);
         view.setGravity(Gravity.CENTER);
         view.setSingleLine(true);
-        view.setPadding(dp(4), 0, dp(4), 0);
-        view.setBackground(glassCard());
-        view.setMinHeight(0);
-        LinearLayout.LayoutParams params = weightedParams();
-        params.height = dp(32);
-        view.setLayoutParams(params);
+        view.setPadding(dp(6), dp(6), dp(6), dp(6));
+        view.setBackground(buttonBackground());
+        // No fixed height. A hard 32dp was shorter than the label plus its
+        // padding, so the text was clipped, the same mistake the sort chips had.
+        view.setMinHeight(dp(32));
+        view.setLayoutParams(weightedParams());
         view.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -2589,50 +2594,96 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Import entry point, with the format spelled out.
+     * Import, with the text box right here.
      *
-     * The old build printed a numbered guide next to the import button and this
-     * rewrite dropped it, which left the dialog saying only "pick a file or
-     * paste something" while offering no clue about what either route expected.
-     * The guide is back, listing the shapes the parser actually accepts.
+     * It used to take a tap on a "paste" button to reveal a field, which made
+     * saving a single password a five step detour. The field is editable, so it
+     * can be typed into a line at a time or pasted into whole, and there is
+     * still a button for filling it from the clipboard in one tap.
      */
     private void askImportLegacy() {
+        final EditText input = textInput("每行一条：名称 → 密码 → 备注 → 标签");
+        input.setMinLines(7);
+        input.setMaxLines(11);
+        input.setGravity(Gravity.TOP);
+        input.setTextSize(Theme.SIZE_SMALL);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        // Monospace, so tab separated columns line up while typing.
+        input.setTypeface(android.graphics.Typeface.MONOSPACE);
+
         LinearLayout box = column();
-        box.setPadding(dp(20), 0, dp(20), dp(4));
+        box.setPadding(dp(18), 0, dp(18), 0);
 
         TextView guide = new TextView(this);
-        guide.setText("支持以下格式，自动识别。内容较长时用“选择文件”更可靠。\n\n"
-                + "【明文 · 每行一条】\n"
-                + "格式：名称 → 密码 → 备注 → 标签\n"
-                + "❶ 用 Tab 分隔最稳妥，密码内含逗号也不会被切错\n"
-                + "❷ 也可用英文逗号或中文逗号分隔\n"
-                + "❸ 备注、标签可以省略，至少要填名称\n"
-                + "❹ 也可两行一组：第 1 行名称、第 2 行密码\n"
-                + "❺ 重复条目自动跳过\n\n"
-                + "【加密备份】\n"
-                + "❻ 粘贴导出的 .txt 全文，或直接选择该文件，自动识别");
+        guide.setText("每行一条记录，直接输入或用「从剪贴板填入」。\n"
+                + "Tab 或逗号分隔都行，Tab 最稳（密码含逗号也不会被切错）。\n"
+                + "也可两行一组：第 1 行名称、第 2 行密码。加密备份的全文也认。");
         guide.setTextColor(Theme.TEXT_SECONDARY);
-        guide.setTextSize(Theme.SIZE_SMALL);
-        guide.setLineSpacing(dp(4), 1f);
+        guide.setTextSize(Theme.SIZE_TINY);
+        guide.setLineSpacing(dp(3), 1f);
+        guide.setPadding(0, 0, 0, dp(8));
         box.addView(guide);
+        box.addView(input);
+
+        LinearLayout quick = row();
+        quick.setPadding(0, dp(8), 0, 0);
+        quick.addView(weightedButton("从剪贴板填入", Theme.TEXT_ACCENT, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                String clip = clipboardText();
+                if (clip == null || clip.trim().isEmpty()) {
+                    toast("剪贴板是空的");
+                    return;
+                }
+                input.setText(clip);
+                input.setSelection(input.getText().length());
+            }
+        }));
+        quick.addView(weightedButton("选择文件", Theme.TEXT_ACCENT, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Animations.pressFeedback(v);
+                pickBackupFile();
+            }
+        }));
+        box.addView(quick);
 
         new AlertDialog.Builder(this)
                 .setTitle("导入数据")
                 .setView(box)
-                .setPositiveButton("选择文件", new DialogInterface.OnClickListener() {
+                .setPositiveButton("导入", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        pickBackupFile();
-                    }
-                })
-                .setNeutralButton("粘贴内容", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        askPasteImport();
+                        String text = input.getText().toString();
+                        if (text.trim().isEmpty()) {
+                            toast("还没有填写内容");
+                            return;
+                        }
+                        confirmImport(text, "手动输入");
                     }
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /** Whatever the clipboard holds as text, or null. */
+    private String clipboardText() {
+        try {
+            ClipboardManager clipboard =
+                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null || !clipboard.hasPrimaryClip()) {
+                return null;
+            }
+            android.content.ClipData clip = clipboard.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) {
+                return null;
+            }
+            CharSequence text = clip.getItemAt(0).coerceToText(this);
+            return text == null ? null : text.toString();
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private void pickBackupFile() {
@@ -2656,31 +2707,6 @@ public class MainActivity extends Activity {
         confirmImport(text, displayName == null ? "所选文件" : displayName);
     }
 
-
-    private void askPasteImport() {
-        final EditText input = textInput("粘贴备份内容");
-        // Tall enough to see a full 38-entry backup without scrolling blind.
-        input.setMinLines(10);
-        input.setMaxLines(14);
-        input.setGravity(Gravity.TOP);
-        input.setTextSize(Theme.SIZE_SMALL);
-
-        LinearLayout box = column();
-        box.addView(input);
-        box.addView(hint("提示：内容较长时用“选择文件”导入更可靠。"));
-
-        new AlertDialog.Builder(this)
-                .setTitle("粘贴导入")
-                .setView(box)
-                .setPositiveButton("解析并导入", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        confirmImport(input.getText().toString(), "粘贴内容");
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
 
     /**
      * Parse first, then tell the user what was found before writing anything.
@@ -3040,7 +3066,7 @@ public class MainActivity extends Activity {
         view.setGravity(Gravity.CENTER);
         view.setPadding(dp(Theme.PAD_FIELD_H), dp(Theme.PAD_FIELD_V),
                 dp(Theme.PAD_FIELD_H), dp(Theme.PAD_FIELD_V));
-        view.setBackground(glassCard());
+        view.setBackground(buttonBackground());
         view.setClickable(true);
         // A minimum height keeps short and long labels the same size, so a row
         // of buttons lines up instead of looking like stray boxes.
@@ -3115,7 +3141,7 @@ public class MainActivity extends Activity {
     }
 
     /** How often the glass backdrop is recaptured, in milliseconds. */
-    private static final long CAPTURE_INTERVAL_MS = 600L;
+    private static final long CAPTURE_INTERVAL_MS = 200L;
 
     /**
      * A card container in the current style.
@@ -3165,7 +3191,7 @@ public class MainActivity extends Activity {
         if (rain != null) {
             rain.setVisibility(style == Theme.STYLE_MINIMAL ? View.GONE : View.VISIBLE);
         }
-        GlassCard.resetShader();
+        GlassPainter.resetShader();
         if (style == Theme.STYLE_GLASS) {
             startBackdropCapture();
         } else {
@@ -3210,9 +3236,10 @@ public class MainActivity extends Activity {
             return;
         }
         if (Backdrop.capture(rain, scrimLayer, Theme.BG_DEEP, dp(Theme.GLASS_BLUR_DP))) {
-            if (contentArea != null) {
-                contentArea.invalidate();
-            }
+            // The panes have to be invalidated one by one. Invalidating their
+            // parent is not enough: an unchanged display list is reused and
+            // onDraw never runs again, which left the rain frozen in the glass.
+            GlassCard.invalidateAll();
         }
     }
 
@@ -3276,6 +3303,7 @@ public class MainActivity extends Activity {
                 }
                 style = index;
                 prefs.edit().putInt(KEY_STYLE, index).apply();
+                Theme.useStyle(style);
                 applyStyle();
                 showTab(activeTab);
             }
@@ -3286,6 +3314,27 @@ public class MainActivity extends Activity {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(Theme.SURFACE);
         drawable.setCornerRadius(dp(Theme.RADIUS_CARD));
+        drawable.setStroke(dp(Theme.STROKE_WIDTH), Theme.SURFACE_STROKE);
+        return drawable;
+    }
+
+    /**
+     * Background for a button.
+     *
+     * In the glass style a button is a pane like any other, which is why this
+     * returns the drawable interface rather than a gradient.
+     */
+    private android.graphics.drawable.Drawable buttonBackground() {
+        if (style == Theme.STYLE_GLASS) {
+            return new GlassDrawable(getResources().getDisplayMetrics().density,
+                    Theme.RADIUS_CARD, Theme.GLASS_THICKNESS_DP,
+                    Theme.GLASS_TINT_COLOR, Theme.GLASS_TINT);
+        }
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setShape(GradientDrawable.RECTANGLE);
+        drawable.setCornerRadius(dp(Theme.RADIUS_CARD));
+        drawable.setColor(style == Theme.STYLE_MINIMAL
+                ? Theme.BUTTON_BG_MINIMAL : Theme.BUTTON_BG);
         drawable.setStroke(dp(Theme.STROKE_WIDTH), Theme.SURFACE_STROKE);
         return drawable;
     }

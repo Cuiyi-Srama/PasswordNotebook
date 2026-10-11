@@ -12,22 +12,31 @@ import android.view.View;
 /**
  * One blurred still of the background, shared by every glass pane on screen.
  *
- * <p>This exists because Android has no way to blur what is painted *behind* a
- * view. {@code View.setRenderEffect} blurs a view's own content and
+ * <p>This exists because Android has no way to blur what is painted behind a
+ * view. {@code View.setRenderEffect} blurs a view own content and
  * {@code Window.setBackgroundBlurRadius} blurs the window behind the app, so
- * neither produces glass. What every real implementation does instead is
- * render the backdrop itself and sample it, which is what this class prepares.
+ * neither produces glass. Every real implementation renders the backdrop
+ * itself and samples it instead, which is what this class prepares.
  *
- * <p>The still is refreshed on a timer rather than per frame. The rain drifts
- * slowly, and once blurred the difference between a live and a slightly stale
- * copy is not visible, so the cost of a full screen capture and blur is paid a
- * couple of times a second instead of sixty.
+ * <p>The still is refreshed on a timer rather than per frame, at a cadence
+ * fast enough that the rain still reads as moving behind the glass.
  */
 public final class Backdrop {
+
+    /**
+     * The backdrop is captured at half resolution.
+     *
+     * It is going to be blurred anyway, so the lost detail is invisible in the
+     * result, while the capture, the blur and the texture upload all shrink by
+     * four. That saving is what makes a fast refresh affordable, and a fast
+     * refresh is what makes the rain look alive through the glass.
+     */
+    private static final float CAPTURE_SCALE = 0.5f;
 
     private static Bitmap blurred;
     private static int originX;
     private static int originY;
+    private static float captureScale = 1f;
 
     private Backdrop() {
     }
@@ -35,6 +44,25 @@ public final class Backdrop {
     /** The blurred backdrop, or null before the first {@link #capture}. */
     public static Bitmap blurred() {
         return blurred;
+    }
+
+    /** Where the captured region sits in window coordinates. */
+    public static int originX() {
+        return originX;
+    }
+
+    public static int originY() {
+        return originY;
+    }
+
+    /**
+     * Scale of the captured bitmap relative to window coordinates.
+     *
+     * Panes multiply their offsets by this before sampling, because the shader
+     * indexes pixels of the scaled bitmap, not pixels of the window.
+     */
+    public static float captureScale() {
+        return captureScale;
     }
 
     /**
@@ -47,34 +75,38 @@ public final class Backdrop {
         if (rain == null) {
             return false;
         }
-        int width = rain.getWidth();
-        int height = rain.getHeight();
-        if (width <= 0 || height <= 0) {
+        int fullWidth = rain.getWidth();
+        int fullHeight = rain.getHeight();
+        if (fullWidth <= 0 || fullHeight <= 0) {
             return false;
         }
+        int width = Math.max(1, Math.round(fullWidth * CAPTURE_SCALE));
+        int height = Math.max(1, Math.round(fullHeight * CAPTURE_SCALE));
 
         Bitmap raw;
         try {
             raw = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         } catch (OutOfMemoryError oom) {
-            // A full screen ARGB buffer is around 10 MB. Giving up on glass is
-            // the right answer when memory is this tight.
+            // Half a screen of ARGB is still a few megabytes. Giving up on
+            // glass is the right answer when memory is this tight.
             return false;
         }
 
+        Canvas canvas = new Canvas(raw);
+        canvas.scale(CAPTURE_SCALE, CAPTURE_SCALE);
         int[] location = new int[2];
         rain.getLocationInWindow(location);
         originX = location[0];
         originY = location[1];
+        captureScale = CAPTURE_SCALE;
 
-        Canvas canvas = new Canvas(raw);
         canvas.drawColor(baseColor);
         rain.draw(canvas);
         if (scrim != null && scrim.getVisibility() == View.VISIBLE) {
             scrim.draw(canvas);
         }
 
-        Bitmap result = blur(raw, blurRadius);
+        Bitmap result = blur(raw, blurRadius * CAPTURE_SCALE);
         if (result != raw) {
             raw.recycle();
         }
@@ -115,15 +147,6 @@ public final class Backdrop {
         } catch (Throwable t) {
             return source;
         }
-    }
-
-    /** Where the captured region sits in window coordinates. */
-    public static int originX() {
-        return originX;
-    }
-
-    public static int originY() {
-        return originY;
     }
 
     /** Frees the shared still. Called when the style no longer needs it. */

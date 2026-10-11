@@ -17,11 +17,11 @@ public final class Theme {
     // ---- background ----
 
     /** Base canvas colour behind the rain. */
-    public static final int BG_DEEP = 0xFF04070C;
+    public static int BG_DEEP = 0xFF04070C;
     /** The rain overlay tint, drawn each frame before the glyphs. */
     public static final int RAIN_BASE = 0xFF04A0F2;
     /** Horizontal scanline colour, low alpha. */
-    public static final int SCANLINE = 0x1100FF88;
+    public static int SCANLINE = 0x1100FF88;
 
     /**
      * Scrim drawn between the rain and the interface.
@@ -30,9 +30,9 @@ public final class Theme {
      * backdrop for text. This layer sits on top of it and pulls the contrast
      * down without hiding the animation entirely.
      */
-    public static final int SCRIM = 0xD904070C;
+    public static int SCRIM = 0xD904070C;
     /** Extra scrim under dense areas such as list rows. */
-    public static final int SCRIM_STRONG = 0xE604070C;
+    public static int SCRIM_STRONG = 0xE604070C;
 
     // ---- cyber rain palette ----
 
@@ -64,14 +64,91 @@ public final class Theme {
     // ---- surfaces ----
 
     /** Translucent card behind content. */
-    public static final int SURFACE = 0x661A3A2A;
+    public static int SURFACE = 0x661A3A2A;
     /** Slightly stronger card used for inputs. */
-    public static final int SURFACE_STRONG = 0xCC0A1220;
+    public static int SURFACE_STRONG = 0xCC0A1220;
     /** Inner field colour. */
-    public static final int FIELD = 0x441A3A2A;
+    public static int FIELD = 0x441A3A2A;
     /** Border of glass cards. */
-    public static final int SURFACE_STROKE = 0x4480FFA0;
+    public static int SURFACE_STROKE = 0x4480FFA0;
 
+    // Originals, kept so the palette can be switched back and forth.
+    private static final int CYBER_BG_DEEP = 0xFF04070C;
+    private static final int CYBER_SCANLINE = 0x1100FF88;
+    private static final int CYBER_SCRIM = 0xD904070C;
+    private static final int CYBER_SCRIM_STRONG = 0xE604070C;
+    private static final int CYBER_SURFACE = 0x661A3A2A;
+    private static final int CYBER_SURFACE_STRONG = 0xCC0A1220;
+    private static final int CYBER_FIELD = 0x441A3A2A;
+    private static final int CYBER_SURFACE_STROKE = 0x4480FFA0;
+    private static final int CYBER_TEXT_PRIMARY = 0xFFD0FFD0;
+    private static final int CYBER_TEXT_SECONDARY = 0x88A0FFA0;
+    private static final int CYBER_TEXT_ACCENT = 0xFF00FF88;
+    private static final int CYBER_TEXT_DANGER = 0xFFFFA0A0;
+    private static final int CYBER_TEXT_MUTED = 0xFF6A8A7A;
+    private static final int CYBER_BUTTON_BG = 0xFF1A3A2A;
+    private static final int CYBER_BUTTON_BG_DANGER = 0xFF3A1A1A;
+    private static final int CYBER_BUTTON_PRIMARY = 0xFF1A5A3A;
+    private static final int CYBER_TAG_FILL = 0x2E00FF88;
+    private static final int CYBER_TAG_FILL_ACTIVE = 0x6600FF88;
+    private static final int CYBER_TAG_STROKE = 0x5510C060;
+    private static final int CYBER_GLASS_TINT_COLOR = 0xFF7FFFD8;
+    /**
+     * Switches the whole palette.
+     *
+     * The colours are mutable statics rather than constants so that one call
+     * repaints everything that reads them. Views already built keep the colour
+     * they were handed, so callers must rebuild the page afterwards: the
+     * settings picker does exactly that.
+     *
+     * MINIMAL is deliberately monochrome. Dropping the animation alone still
+     * left a screen full of green, which is not what minimal means.
+     */
+    public static void useStyle(int style) {
+        if (style == STYLE_MINIMAL) {
+            BG_DEEP = 0xFF000000;
+            SCANLINE = 0x11FFFFFF;
+            SCRIM = 0xC0000000;
+            SCRIM_STRONG = 0xE6000000;
+            SURFACE = 0xF2141414;
+            SURFACE_STRONG = 0xFA0A0A0A;
+            FIELD = 0x1FFFFFFF;
+            SURFACE_STROKE = 0x33FFFFFF;
+            TEXT_PRIMARY = 0xFFF5F5F5;
+            TEXT_SECONDARY = 0xFF9E9E9E;
+            TEXT_ACCENT = 0xFFFFFFFF;
+            TEXT_DANGER = 0xFFFF8A8A;
+            TEXT_MUTED = 0xFF6E6E6E;
+            BUTTON_BG = 0xFF1F1F1F;
+            BUTTON_BG_DANGER = 0xFF2A1A1A;
+            BUTTON_PRIMARY = 0xFF3A3A3A;
+            TAG_FILL = 0x2EFFFFFF;
+            TAG_FILL_ACTIVE = 0x66FFFFFF;
+            TAG_STROKE = 0x55FFFFFF;
+            GLASS_TINT_COLOR = 0xFFE8E8E8;
+            return;
+        }
+        BG_DEEP = CYBER_BG_DEEP;
+        SCANLINE = CYBER_SCANLINE;
+        SCRIM = CYBER_SCRIM;
+        SCRIM_STRONG = CYBER_SCRIM_STRONG;
+        SURFACE = CYBER_SURFACE;
+        SURFACE_STRONG = CYBER_SURFACE_STRONG;
+        FIELD = CYBER_FIELD;
+        SURFACE_STROKE = CYBER_SURFACE_STROKE;
+        TEXT_PRIMARY = CYBER_TEXT_PRIMARY;
+        TEXT_SECONDARY = CYBER_TEXT_SECONDARY;
+        TEXT_ACCENT = CYBER_TEXT_ACCENT;
+        TEXT_DANGER = CYBER_TEXT_DANGER;
+        TEXT_MUTED = CYBER_TEXT_MUTED;
+        BUTTON_BG = CYBER_BUTTON_BG;
+        BUTTON_BG_DANGER = CYBER_BUTTON_BG_DANGER;
+        BUTTON_PRIMARY = CYBER_BUTTON_PRIMARY;
+        TAG_FILL = CYBER_TAG_FILL;
+        TAG_FILL_ACTIVE = CYBER_TAG_FILL_ACTIVE;
+        TAG_STROKE = CYBER_TAG_STROKE;
+        GLASS_TINT_COLOR = CYBER_GLASS_TINT_COLOR;
+    }
     // ---- interface styles ----
     /**
      * Three looks, chosen in settings.
@@ -94,7 +171,7 @@ public final class Theme {
     public static final int GLASS_BLUR_DP = 18;
     public static final int GLASS_THICKNESS_DP = 16;
     public static final float GLASS_TINT = 0.12f;
-    public static final int GLASS_TINT_COLOR = 0xFF7FFFD8;
+    public static int GLASS_TINT_COLOR = 0xFF7FFFD8;
 
     // ---- glassmorphism ----
 
@@ -141,11 +218,11 @@ public final class Theme {
      * copy rather than as a label, and gave no hint that it could be tapped to
      * narrow the list. A filled pill with a border marks it as an object.
      */
-    public static final int TAG_FILL = 0x2E00FF88;
+    public static int TAG_FILL = 0x2E00FF88;
     /** Active filter pill: brighter fill, solid border. */
-    public static final int TAG_FILL_ACTIVE = 0x6600FF88;
+    public static int TAG_FILL_ACTIVE = 0x6600FF88;
     /** Border of an inactive pill. */
-    public static final int TAG_STROKE = 0x5510C060;
+    public static int TAG_STROKE = 0x5510C060;
     public static final int RADIUS_CHIP = 999;
     public static final int CHIP_PAD_H = 12;
     public static final int CHIP_PAD_V = 5;
@@ -167,11 +244,11 @@ public final class Theme {
 
     // ---- text ----
 
-    public static final int TEXT_PRIMARY = 0xFFD0FFD0;
-    public static final int TEXT_SECONDARY = 0x88A0FFA0;
-    public static final int TEXT_ACCENT = 0xFF00FF88;
-    public static final int TEXT_DANGER = 0xFFFFA0A0;
-    public static final int TEXT_MUTED = 0xFF6A8A7A;
+    public static int TEXT_PRIMARY = 0xFFD0FFD0;
+    public static int TEXT_SECONDARY = 0x88A0FFA0;
+    public static int TEXT_ACCENT = 0xFF00FF88;
+    public static int TEXT_DANGER = 0xFFFFA0A0;
+    public static int TEXT_MUTED = 0xFF6A8A7A;
 
     public static final float SIZE_TITLE = 17f;
     public static final float SIZE_BODY = 14f;
@@ -195,9 +272,11 @@ public final class Theme {
 
     // ---- controls ----
 
-    public static final int BUTTON_BG = 0xFF1A3A2A;
-    public static final int BUTTON_BG_DANGER = 0xFF3A1A1A;
-    public static final int BUTTON_PRIMARY = 0xFF1A5A3A;
+    public static int BUTTON_BG = 0xFF1A3A2A;
+    /** Minimal style: a flat grey panel instead of a tinted one. */
+    public static final int BUTTON_BG_MINIMAL = 0xFF1F1F1F;
+    public static int BUTTON_BG_DANGER = 0xFF3A1A1A;
+    public static int BUTTON_PRIMARY = 0xFF1A5A3A;
 
     // ---- animation ----
 
